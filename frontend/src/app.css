@@ -29,6 +29,8 @@
   --shadow-drawer: -16px 0 48px oklch(20% 0.02 155 / 0.12);
   --radius-sm: 4px;
   --radius-md: 8px;
+  --control-height: 38px;
+  --control-height-sm: 34px;
   --duration-fast: 120ms;
   --duration-state: 240ms;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
@@ -134,8 +136,8 @@ button {
 .icon-button {
   display: inline-grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
+  width: var(--control-height);
+  height: var(--control-height);
   padding: 0;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
@@ -152,12 +154,13 @@ button {
 }
 
 .button {
-  min-height: 40px;
-  padding: 8px 14px;
+  min-height: var(--control-height);
+  padding: 7px 12px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
   color: var(--ink-strong);
   background: var(--surface-raised);
+  font-size: 0.875rem;
   font-weight: 650;
   transition:
     background var(--duration-fast) var(--ease-out),
@@ -192,19 +195,20 @@ button {
 .select,
 .textarea {
   width: 100%;
-  min-height: 42px;
-  padding: 8px 10px;
+  min-height: var(--control-height);
+  padding: 7px 9px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
   color: var(--ink-strong);
   background: var(--surface-raised);
+  font-size: 0.875rem;
   transition:
     border-color var(--duration-fast) var(--ease-out),
     box-shadow var(--duration-fast) var(--ease-out);
 }
 
 .textarea {
-  min-height: 96px;
+  min-height: 88px;
   resize: vertical;
 }
 

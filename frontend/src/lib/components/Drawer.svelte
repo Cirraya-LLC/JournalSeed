@@ -68,7 +68,7 @@
     top: 0;
     right: 0;
     display: grid;
-    width: min(100%, 480px);
+    width: min(100%, 456px);
     height: 100%;
     height: 100dvh;
     grid-template-rows: auto minmax(0, 1fr);
@@ -82,8 +82,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    min-height: 64px;
-    padding: max(12px, env(safe-area-inset-top)) 18px 12px;
+    min-height: 58px;
+    padding: max(10px, env(safe-area-inset-top)) 16px 10px;
     border-bottom: 1px solid var(--line);
   }
 

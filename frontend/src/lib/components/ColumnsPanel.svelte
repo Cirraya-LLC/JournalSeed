@@ -287,8 +287,8 @@
   .view-header {
     display: flex;
     align-items: center;
-    min-height: 84px;
-    padding: 16px 24px;
+    min-height: 64px;
+    padding: 12px 20px;
     border-bottom: 1px solid var(--line);
   }
 
@@ -330,7 +330,7 @@
 
   section {
     min-width: 0;
-    padding: 24px;
+    padding: 18px 20px;
   }
 
   .new-column-section {
@@ -339,8 +339,8 @@
   }
 
   .section-header {
-    min-height: 44px;
-    margin-bottom: 20px;
+    min-height: 38px;
+    margin-bottom: 14px;
   }
 
   .column-list {
@@ -353,7 +353,7 @@
     grid-template-columns: 72px minmax(150px, 1fr) 80px 100px 40px;
     align-items: center;
     gap: 8px;
-    min-height: 46px;
+    min-height: 40px;
     border-bottom: 1px solid var(--line);
   }
 
@@ -431,7 +431,7 @@
 
   .new-column-form {
     display: grid;
-    gap: 16px;
+    gap: 12px;
   }
 
   .select-wrap {
@@ -441,7 +441,7 @@
   .select-wrap :global(svg) {
     position: absolute;
     right: 10px;
-    bottom: 13px;
+    bottom: 10px;
     color: var(--ink-muted);
     pointer-events: none;
   }
@@ -451,7 +451,7 @@
   }
 
   .formula-input {
-    min-height: 132px;
+    min-height: 116px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.8125rem;
   }

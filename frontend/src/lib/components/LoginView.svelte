@@ -62,7 +62,7 @@
 <style>
   .login-form {
     display: grid;
-    gap: 20px;
+    gap: 18px;
   }
 
   header {

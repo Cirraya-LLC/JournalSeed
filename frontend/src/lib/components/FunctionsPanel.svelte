@@ -162,8 +162,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    min-height: 84px;
-    padding: 16px 24px;
+    min-height: 64px;
+    padding: 12px 20px;
     border-bottom: 1px solid var(--line);
   }
 
@@ -212,12 +212,12 @@
 
   .functions-layout {
     display: grid;
-    min-height: calc(100vh - 140px);
-    grid-template-columns: 260px minmax(0, 1fr);
+    min-height: calc(100vh - 116px);
+    grid-template-columns: 244px minmax(0, 1fr);
   }
 
   .function-list {
-    padding: 12px;
+    padding: 10px;
     border-right: 1px solid var(--line);
     background: var(--surface-subtle);
   }
@@ -225,11 +225,11 @@
   .function-list > button {
     display: grid;
     width: 100%;
-    min-height: 54px;
-    grid-template-columns: 34px minmax(0, 1fr);
+    min-height: 48px;
+    grid-template-columns: 32px minmax(0, 1fr);
     align-items: center;
-    gap: 9px;
-    padding: 7px 9px;
+    gap: 8px;
+    padding: 6px 8px;
     border: 0;
     border-radius: var(--radius-sm);
     color: var(--ink);
@@ -246,8 +246,8 @@
   .function-icon {
     display: grid;
     place-items: center;
-    width: 32px;
-    height: 32px;
+    width: 30px;
+    height: 30px;
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
     color: var(--accent-strong);
@@ -286,19 +286,19 @@
   }
 
   .function-empty {
-    padding: 40px 16px;
+    padding: 32px 14px;
   }
 
   .runner {
     min-width: 0;
-    padding: 28px;
+    padding: 22px;
   }
 
   .runner-header {
     display: grid;
     grid-template-columns: minmax(160px, 0.4fr) minmax(220px, 1fr);
-    gap: 24px;
-    padding-bottom: 20px;
+    gap: 18px;
+    padding-bottom: 16px;
     border-bottom: 1px solid var(--line);
   }
 
@@ -311,22 +311,22 @@
 
   .runner-form {
     display: grid;
-    gap: 18px;
-    padding-block: 24px;
+    gap: 14px;
+    padding-block: 18px;
   }
 
   .parameter-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 16px;
+    gap: 12px;
   }
 
   .checkbox-row {
     display: flex;
     align-items: center;
     gap: 9px;
-    min-height: 42px;
-    padding: 8px 10px;
+    min-height: var(--control-height);
+    padding: 7px 9px;
     border: 1px solid var(--line-strong);
     border-radius: var(--radius-sm);
     background: var(--surface-raised);
@@ -371,7 +371,7 @@
   }
 
   pre {
-    min-height: 160px;
+    min-height: 148px;
     overflow: auto;
     margin: 0;
     padding: 16px;
@@ -385,13 +385,13 @@
   }
 
   .result-empty {
-    min-height: 160px;
+    min-height: 148px;
     border: 1px dashed var(--line-strong);
     border-radius: var(--radius-sm);
   }
 
   .runner-empty {
-    min-height: 320px;
+    min-height: 280px;
   }
 
   @media (max-width: 760px) {

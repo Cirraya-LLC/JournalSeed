@@ -48,7 +48,7 @@
 >
   <form on:submit|preventDefault={submit} class="setup-form">
     <header>
-      <span>01 / 初始化</span>
+      <span>初始化设置</span>
       <h2>建立管理员</h2>
     </header>
 
@@ -101,7 +101,7 @@
 <style>
   .setup-form {
     display: grid;
-    gap: 20px;
+    gap: 18px;
   }
 
   header {

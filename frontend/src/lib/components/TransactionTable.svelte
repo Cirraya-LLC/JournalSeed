@@ -224,43 +224,43 @@
 <style>
   .table-shell {
     position: relative;
-    min-height: 360px;
+    min-height: 316px;
     background: var(--surface-raised);
   }
 
   .desktop-table {
-    max-height: calc(100vh - 242px);
-    max-height: calc(100dvh - 242px);
+    max-height: calc(100vh - 198px);
+    max-height: calc(100dvh - 198px);
     overflow: auto;
     overscroll-behavior: contain;
   }
 
   table {
-    width: max(100%, 920px);
+    width: max(100%, 960px);
     border-spacing: 0;
     table-layout: fixed;
-    font-size: 0.875rem;
+    font-size: 0.8125rem;
     font-variant-numeric: tabular-nums;
   }
 
   .type-column {
-    width: 42px;
+    width: 38px;
   }
 
   .action-column {
-    width: 48px;
+    width: 42px;
   }
 
   th {
     position: sticky;
     z-index: 2;
     top: 0;
-    height: 38px;
+    height: 34px;
     padding: 0;
     border-right: 1px solid var(--line);
     border-bottom: 1px solid var(--line-strong);
     color: var(--ink-muted);
-    background: var(--surface-subtle);
+    background: oklch(93.5% 0.009 145);
     font-size: 0.75rem;
     font-weight: 700;
     text-align: left;
@@ -270,10 +270,10 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 6px;
+    gap: 5px;
     width: 100%;
     height: 100%;
-    padding: 0 10px;
+    padding: 0 9px;
     border: 0;
     color: inherit;
     background: transparent;
@@ -291,9 +291,9 @@
   }
 
   td {
-    height: 44px;
+    height: 36px;
     overflow: hidden;
-    padding: 0 10px;
+    padding: 0 9px;
     border-right: 1px solid var(--line);
     border-bottom: 1px solid var(--line);
     color: var(--ink);
@@ -305,32 +305,6 @@
     position: relative;
     cursor: pointer;
     transition: background var(--duration-fast) var(--ease-out);
-  }
-
-  tbody tr::after {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    width: 2px;
-    background: transparent;
-    content: '';
-  }
-
-  tbody tr.income::after {
-    background: var(--income);
-  }
-
-  tbody tr.expense::after {
-    background: var(--expense);
-  }
-
-  tbody tr.transfer::after {
-    background: var(--transfer);
-  }
-
-  tbody tr.note::after {
-    background: var(--line-strong);
   }
 
   tbody tr:focus-visible {
@@ -346,22 +320,36 @@
   .type-icon {
     display: inline-grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
+    width: 24px;
+    height: 24px;
+    border-radius: var(--radius-sm);
     color: var(--transfer);
+    background: oklch(94% 0.015 250);
   }
 
-  tr.income .type-icon,
+  tr.income .type-icon {
+    color: var(--income);
+    background: var(--income-soft);
+  }
+
   tr.income .amount-cell {
     color: var(--income);
   }
 
-  tr.expense .type-icon,
+  tr.expense .type-icon {
+    color: var(--expense);
+    background: var(--expense-soft);
+  }
+
   tr.expense .amount-cell {
     color: var(--expense);
   }
 
-  tr.note .type-icon,
+  tr.note .type-icon {
+    color: var(--ink-muted);
+    background: var(--surface-subtle);
+  }
+
   tr.note .amount-cell {
     color: var(--ink-muted);
   }
@@ -402,8 +390,8 @@
   .action-cell button {
     display: inline-grid;
     place-items: center;
-    width: 32px;
-    height: 32px;
+    width: 28px;
+    height: 28px;
     padding: 0;
     border: 0;
     border-radius: var(--radius-sm);
@@ -437,8 +425,8 @@
     place-content: center;
     justify-items: center;
     gap: 8px;
-    min-height: 320px;
-    padding: 24px;
+    min-height: 280px;
+    padding: 20px;
     color: var(--ink-muted);
     text-align: center;
   }
@@ -446,8 +434,8 @@
   .empty-state > div {
     display: grid;
     place-items: center;
-    width: 48px;
-    height: 48px;
+    width: 44px;
+    height: 44px;
     border: 1px solid var(--line);
     border-radius: 50%;
     color: var(--accent-strong);
@@ -492,7 +480,7 @@
 
   @media (max-width: 720px) {
     .table-shell {
-      min-height: 300px;
+      min-height: 280px;
     }
 
     .desktop-table {
@@ -506,11 +494,11 @@
     .mobile-row {
       display: grid;
       width: 100%;
-      min-height: 68px;
-      grid-template-columns: 34px minmax(0, 1fr) auto;
+      min-height: 62px;
+      grid-template-columns: 32px minmax(0, 1fr) auto;
       align-items: center;
       gap: 8px;
-      padding: 10px 14px;
+      padding: 9px 12px;
       border: 0;
       border-bottom: 1px solid var(--line);
       color: var(--ink);
@@ -523,7 +511,7 @@
       place-items: center;
       width: 30px;
       height: 30px;
-      border-radius: 50%;
+      border-radius: var(--radius-sm);
       color: var(--transfer);
       background: var(--surface-subtle);
     }
@@ -584,11 +572,11 @@
 
     .mobile-skeleton {
       display: grid;
-      min-height: 68px;
+      min-height: 62px;
       grid-template-columns: 1fr 72px;
       align-items: center;
       gap: 24px;
-      padding: 14px;
+      padding: 12px;
       border-bottom: 1px solid var(--line);
     }
 

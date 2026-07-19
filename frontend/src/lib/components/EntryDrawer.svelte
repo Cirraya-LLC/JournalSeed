@@ -265,9 +265,9 @@
   .entry-form {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 12px;
     min-height: 100%;
-    padding: 18px 18px max(18px, env(safe-area-inset-bottom));
+    padding: 16px 16px max(16px, env(safe-area-inset-bottom));
   }
 
   .segmented {
@@ -286,8 +286,8 @@
     justify-content: center;
     gap: 6px;
     min-width: 0;
-    min-height: 38px;
-    padding: 6px 8px;
+    min-height: var(--control-height-sm);
+    padding: 5px 8px;
     border: 0;
     border-radius: 3px;
     color: var(--ink-muted);
@@ -315,7 +315,7 @@
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     align-items: start;
-    gap: 10px;
+    gap: 9px;
   }
 
   .entry-form :global(.field) {
@@ -360,9 +360,9 @@
 
   .custom-fields {
     display: grid;
-    gap: 14px;
+    gap: 12px;
     margin: 0;
-    padding: 14px 0 0;
+    padding: 12px 0 0;
     border: 0;
     border-top: 1px solid var(--line);
   }
@@ -378,8 +378,8 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    min-height: 42px;
-    padding: 8px 10px;
+    min-height: var(--control-height);
+    padding: 7px 9px;
     border: 1px solid var(--line-strong);
     border-radius: var(--radius-sm);
     background: var(--surface-raised);
@@ -397,7 +397,7 @@
     align-items: center;
     gap: 8px;
     margin-top: auto;
-    padding-top: 12px;
+    padding-top: 10px;
     border-top: 1px solid var(--line);
   }
 

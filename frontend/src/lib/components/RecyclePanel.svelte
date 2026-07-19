@@ -134,8 +134,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    min-height: 84px;
-    padding: 16px 24px;
+    min-height: 64px;
+    padding: 12px 20px;
     border-bottom: 1px solid var(--line);
     color: var(--ink-muted);
   }
@@ -159,9 +159,9 @@
 
   .tabs {
     display: flex;
-    min-height: 50px;
+    min-height: 44px;
     gap: 4px;
-    padding: 6px 24px 0;
+    padding: 5px 20px 0;
     border-bottom: 1px solid var(--line);
   }
 
@@ -204,11 +204,11 @@
   }
 
   .page-error {
-    margin: 16px 24px 0;
+    margin: 14px 20px 0;
   }
 
   .recycle-list {
-    padding: 20px 24px;
+    padding: 16px 20px;
     font-size: 0.875rem;
   }
 
@@ -216,8 +216,8 @@
   .list-row {
     display: grid;
     align-items: center;
-    gap: 12px;
-    min-height: 48px;
+    gap: 10px;
+    min-height: 42px;
     border-bottom: 1px solid var(--line);
   }
 
@@ -263,7 +263,7 @@
     display: grid;
     place-items: center;
     gap: 8px;
-    min-height: 260px;
+    min-height: 220px;
     color: var(--ink-muted);
   }
 
