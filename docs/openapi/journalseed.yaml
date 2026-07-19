@@ -1,0 +1,636 @@
+openapi: 3.1.0
+info:
+  title: JournalSeed API
+  version: 0.1.0
+  description: Same-origin API for the JournalSeed single-administrator ledger.
+servers:
+  - url: /api/v1
+security:
+  - sessionCookie: []
+paths:
+  /setup/status:
+    get:
+      security: []
+      operationId: getSetupStatus
+      responses:
+        "200":
+          description: Whether an administrator already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SetupStatus"
+  /setup:
+    post:
+      security: []
+      operationId: createAdministrator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetupRequest"
+      responses:
+        "201":
+          description: Administrator, first ledger, and session created.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /auth/session:
+    get:
+      operationId: getSession
+      responses:
+        "200":
+          description: Current session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/login:
+    post:
+      security: []
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Authenticated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/logout:
+    post:
+      operationId: logout
+      parameters:
+        - $ref: "#/components/parameters/CsrfHeader"
+      responses:
+        "204": { description: Session removed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /ledgers:
+    get:
+      operationId: listLedgers
+      responses:
+        "200":
+          description: Active ledgers.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Ledger" }
+    post:
+      operationId: createLedger
+      parameters:
+        - $ref: "#/components/parameters/CsrfHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 120 }
+      responses:
+        "201":
+          description: Ledger with default columns and internal accounts.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ledger" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /ledgers/{ledgerId}/summary:
+    get:
+      operationId: getLedgerSummary
+      parameters:
+        - $ref: "#/components/parameters/LedgerId"
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: Balance and entry-only period totals.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LedgerSummary" }
+  /ledgers/{ledgerId}/accounts:
+    get:
+      operationId: listAccounts
+      parameters:
+        - $ref: "#/components/parameters/LedgerId"
+        - name: includeArchived
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: User-visible accounts and current balances.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Account" }
+    post:
+      operationId: createAccount
+      parameters:
+        - $ref: "#/components/parameters/LedgerId"
+        - $ref: "#/components/parameters/CsrfHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AccountInput" }
+      responses:
+        "201":
+          description: Created account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Account" }
+  /ledgers/{ledgerId}/categories:
+    get:
+      operationId: listCategories
+      parameters:
+        - $ref: "#/components/parameters/LedgerId"
+        - name: includeArchived
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Ledger categories.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Category" }
+    post:
+      operationId: createCategory
+      parameters:
+        - $ref: "#/components/parameters/LedgerId"
+        - $ref: "#/components/parameters/CsrfHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CategoryInput" }
+      responses:
+        "201":
+          description: Created category.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Category" }
+  /ledgers/{ledgerId}/columns:
+    get:
+      operationId: listColumns
+      parameters:
+        - $ref: "#/components/parameters/LedgerId"
+        - name: recycled
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Ordered active or recycled columns.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Column" }
+    post:
+      operationId: createColumn
+      parameters:
+        - $ref: "#/components/parameters/LedgerId"
+        - $ref: "#/components/parameters/CsrfHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ColumnInput" }
+      responses:
+        "201":
+          description: Created custom column.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Column" }
+  /ledgers/{ledgerId}/rows:
+    get:
+      operationId: listRows
+      parameters:
+        - $ref: "#/components/parameters/LedgerId"
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 250, default: 100 }
+        - name: sort
+          in: query
+          schema: { type: string, default: "date:desc" }
+        - name: filter
+          in: query
+          description: URL-encoded JSON array of AND-combined typed filters.
+          schema: { type: string }
+        - name: recycled
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Keyset-paginated rows and typed cells.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RowPage" }
+    post:
+      operationId: createRow
+      parameters:
+        - $ref: "#/components/parameters/LedgerId"
+        - $ref: "#/components/parameters/CsrfHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RowInput" }
+      responses:
+        "201":
+          description: Saved row and balanced postings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JournalRow" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /rows/{rowId}:
+    patch:
+      operationId: updateRow
+      parameters:
+        - $ref: "#/components/parameters/RowId"
+        - $ref: "#/components/parameters/CsrfHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RowInput" }
+      responses:
+        "200":
+          description: Updated row and rebuilt postings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JournalRow" }
+    delete:
+      operationId: recycleRow
+      parameters:
+        - $ref: "#/components/parameters/RowId"
+        - $ref: "#/components/parameters/CsrfHeader"
+      responses:
+        "204": { description: Row moved to the recycle bin. }
+  /rows/{rowId}/restore:
+    post:
+      operationId: restoreRow
+      parameters:
+        - $ref: "#/components/parameters/RowId"
+        - $ref: "#/components/parameters/CsrfHeader"
+      responses:
+        "204": { description: Row restored. }
+  /columns/{columnId}:
+    patch:
+      operationId: updateColumn
+      parameters:
+        - $ref: "#/components/parameters/ColumnId"
+        - $ref: "#/components/parameters/CsrfHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ColumnPatch" }
+      responses:
+        "200":
+          description: Updated column.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Column" }
+    delete:
+      operationId: recycleColumn
+      parameters:
+        - $ref: "#/components/parameters/ColumnId"
+        - $ref: "#/components/parameters/CsrfHeader"
+      responses:
+        "204": { description: Column moved to the recycle bin. }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /columns/{columnId}/restore:
+    post:
+      operationId: restoreColumn
+      parameters:
+        - $ref: "#/components/parameters/ColumnId"
+        - $ref: "#/components/parameters/CsrfHeader"
+      responses:
+        "204": { description: Column restored. }
+  /functions:
+    get:
+      operationId: listFunctions
+      responses:
+        "200":
+          description: Current atomically published Lua function registry.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/LuaFunction" }
+  /functions/{name}/invoke:
+    post:
+      operationId: invokeFunction
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/CsrfHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Preview result; no row is mutated by invocation.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /jobs:
+    get:
+      operationId: listJobs
+      responses:
+        "200":
+          description: Recent persistent jobs.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Job" }
+  /jobs/{jobId}/cancel:
+    post:
+      operationId: cancelJob
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/CsrfHeader"
+      responses:
+        "202": { description: Cancellation requested. }
+  /events:
+    get:
+      operationId: streamEvents
+      responses:
+        "200":
+          description: Authenticated job, formula, and Lua reload events.
+          content:
+            text/event-stream:
+              schema: { type: string }
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: js_session
+  parameters:
+    CsrfHeader:
+      name: X-JournalSeed-CSRF
+      in: header
+      required: true
+      schema: { type: string }
+    LedgerId:
+      name: ledgerId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RowId:
+      name: rowId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ColumnId:
+      name: columnId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    Unauthorized:
+      description: Session is absent or expired.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Conflict:
+      description: Requested state conflicts with current state.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    ValidationError:
+      description: Request fields failed validation.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+  schemas:
+    SetupStatus:
+      type: object
+      required: [required]
+      properties:
+        required: { type: boolean }
+    SetupRequest:
+      type: object
+      required: [username, password, ledgerName]
+      properties:
+        username: { type: string, minLength: 1, maxLength: 80 }
+        password: { type: string, minLength: 10, maxLength: 1024 }
+        ledgerName: { type: string, minLength: 1, maxLength: 120 }
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string }
+    Session:
+      type: object
+      required: [user, csrfToken, expiresAt]
+      properties:
+        user:
+          type: object
+          required: [id, username]
+          properties:
+            id: { type: string, format: uuid }
+            username: { type: string }
+        csrfToken: { type: string }
+        expiresAt: { type: string, format: date-time }
+    Ledger:
+      type: object
+      required: [id, name, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        createdAt: { type: string, format: date-time }
+    AccountInput:
+      type: object
+      required: [name, openingBalance]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        openingBalance: { $ref: "#/components/schemas/Money" }
+    Account:
+      allOf:
+        - $ref: "#/components/schemas/AccountInput"
+        - type: object
+          required: [id, balance, archived]
+          properties:
+            id: { type: string, format: uuid }
+            balance: { $ref: "#/components/schemas/Money" }
+            archived: { type: boolean }
+    CategoryInput:
+      type: object
+      required: [name, direction]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        direction: { type: string, enum: [income, expense] }
+    Category:
+      allOf:
+        - $ref: "#/components/schemas/CategoryInput"
+        - type: object
+          required: [id, archived]
+          properties:
+            id: { type: string, format: uuid }
+            archived: { type: boolean }
+    CellValue:
+      oneOf:
+        - type: string
+        - type: boolean
+        - type: "null"
+    RowInput:
+      type: object
+      required: [date, description, kind, amount, cells]
+      properties:
+        date: { type: string, format: date }
+        description: { type: string, maxLength: 4000 }
+        kind: { type: string, enum: [entry, transfer, note] }
+        amount: { $ref: "#/components/schemas/Money" }
+        accountId: { type: [string, "null"], format: uuid }
+        categoryId: { type: [string, "null"], format: uuid }
+        transferAccountId: { type: [string, "null"], format: uuid }
+        cells:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/CellValue" }
+    JournalRow:
+      allOf:
+        - $ref: "#/components/schemas/RowInput"
+        - type: object
+          required: [id, revision, createdAt, updatedAt]
+          properties:
+            id: { type: string, format: uuid }
+            revision: { type: integer, format: int64 }
+            accountName: { type: [string, "null"] }
+            categoryName: { type: [string, "null"] }
+            transferAccountName: { type: [string, "null"] }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+    RowPage:
+      type: object
+      required: [items, hasMore]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/JournalRow" }
+        nextCursor: { type: [string, "null"] }
+        hasMore: { type: boolean }
+    ColumnInput:
+      type: object
+      required: [name, type]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80 }
+        type:
+          type: string
+          enum: [text, number, date, boolean, option, relation, formula]
+        decimalPlaces: { type: integer, minimum: 0, maximum: 18 }
+        formulaSource: { type: string }
+        formulaResultType: { type: string }
+        formulaDependencies:
+          type: array
+          items: { type: string, format: uuid }
+    ColumnPatch:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80 }
+        position: { type: integer, minimum: 0 }
+        width: { type: integer, minimum: 72, maximum: 720 }
+    Column:
+      allOf:
+        - $ref: "#/components/schemas/ColumnInput"
+        - type: object
+          required: [id, position, width, system, recycled]
+          properties:
+            id: { type: string, format: uuid }
+            system: { type: [string, "null"] }
+            position: { type: integer }
+            width: { type: integer }
+            recycled: { type: boolean }
+    LedgerSummary:
+      type: object
+      required: [balance, income, expense, rowCount]
+      properties:
+        balance: { $ref: "#/components/schemas/Money" }
+        income: { $ref: "#/components/schemas/Money" }
+        expense: { $ref: "#/components/schemas/Money" }
+        rowCount: { type: integer, format: int64 }
+    LuaFunction:
+      type: object
+      required: [name, version, description, params]
+      properties:
+        name: { type: string }
+        version: { type: string }
+        description: { type: string }
+        params:
+          type: array
+          items:
+            type: object
+            required: [name, type, label, required]
+            properties:
+              name: { type: string }
+              type: { type: string, enum: [text, number, date, boolean, option] }
+              label: { type: string }
+              required: { type: boolean }
+              options:
+                type: array
+                items: { type: string }
+    Job:
+      type: object
+      required: [id, kind, status, done, total, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [formula_recalc, csv_import, csv_export] }
+        status: { type: string, enum: [queued, running, completed, failed, cancelled] }
+        done: { type: integer, format: int64 }
+        total: { type: integer, format: int64 }
+        error: { type: [object, "null"] }
+        createdAt: { type: string, format: date-time }
+    Money:
+      type: string
+      pattern: "^-?(0|[1-9][0-9]{0,35})(\\.[0-9]{1,2})?$"
+      examples: ["1250.00", "-48.50", "0.00"]
+    Problem:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri-reference }
+        title: { type: string }
+        status: { type: integer }
+        code: { type: string }
+        detail: { type: string }
+        fields:
+          type: object
+          additionalProperties: { type: string }

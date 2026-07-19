@@ -1,0 +1,31 @@
+option(JOURNALSEED_SANITIZE_ADDRESS "Enable AddressSanitizer" OFF)
+option(JOURNALSEED_SANITIZE_UNDEFINED "Enable UndefinedBehaviorSanitizer" OFF)
+option(JOURNALSEED_SANITIZE_THREAD "Enable ThreadSanitizer" OFF)
+
+function(journalseed_enable_sanitizers target)
+  if(MSVC)
+    return()
+  endif()
+
+  if(JOURNALSEED_SANITIZE_THREAD AND
+     (JOURNALSEED_SANITIZE_ADDRESS OR JOURNALSEED_SANITIZE_UNDEFINED))
+    message(FATAL_ERROR "ThreadSanitizer must run separately from ASan/UBSan")
+  endif()
+
+  set(sanitizers "")
+  if(JOURNALSEED_SANITIZE_ADDRESS)
+    list(APPEND sanitizers "address")
+  endif()
+  if(JOURNALSEED_SANITIZE_UNDEFINED)
+    list(APPEND sanitizers "undefined")
+  endif()
+  if(JOURNALSEED_SANITIZE_THREAD)
+    list(APPEND sanitizers "thread")
+  endif()
+
+  if(sanitizers)
+    list(JOIN sanitizers "," sanitizer_flags)
+    target_compile_options(${target} PRIVATE -fno-omit-frame-pointer -fsanitize=${sanitizer_flags})
+    target_link_options(${target} PRIVATE -fno-omit-frame-pointer -fsanitize=${sanitizer_flags})
+  endif()
+endfunction()

@@ -1,0 +1,91 @@
+{
+  "version": 8,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 28,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "debug",
+      "inherits": "base",
+      "displayName": "Debug without Conan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "asan-ubsan",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "JOURNALSEED_SANITIZE_ADDRESS": "ON",
+        "JOURNALSEED_SANITIZE_UNDEFINED": "ON"
+      }
+    },
+    {
+      "name": "tsan",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "JOURNALSEED_SANITIZE_THREAD": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "JOURNALSEED_ENABLE_LTO": "ON"
+      }
+    },
+    {
+      "name": "pgo-generate",
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -fprofile-instr-generate",
+        "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-fprofile-instr-generate"
+      }
+    },
+    {
+      "name": "pgo-use",
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -fprofile-instr-use=${sourceDir}/build/journalseed.profdata",
+        "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-fprofile-instr-use=${sourceDir}/build/journalseed.profdata"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "asan-ubsan", "configurePreset": "asan-ubsan" },
+    { "name": "tsan", "configurePreset": "tsan" },
+    { "name": "release", "configurePreset": "release" }
+  ],
+  "testPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "asan-ubsan",
+      "configurePreset": "asan-ubsan",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

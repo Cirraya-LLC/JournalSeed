@@ -1,0 +1,35 @@
+# C++ and Conan
+/build/
+/build-*/
+/cmake-build-*/
+/CMakeUserPresets.json
+/Testing/
+/.cache/
+compile_commands.json
+*.profraw
+*.profdata
+
+# Frontend
+/node_modules/
+/frontend/node_modules/
+/frontend/.svelte-kit/
+/frontend/build/
+/frontend/coverage/
+/frontend/playwright-report/
+/frontend/test-results/
+/output/
+
+# Local configuration and data
+.env
+.env.*
+!.env.example
+/config.local.json
+/data/
+/bench-data/
+*.log
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,6 @@
+find_package(benchmark CONFIG REQUIRED)
+
+add_executable(journal_bench domain_benchmark.cpp)
+target_link_libraries(journal_bench PRIVATE journalseed_core benchmark::benchmark_main)
+target_compile_features(journal_bench PRIVATE cxx_std_23)
+journalseed_set_warnings(journal_bench)

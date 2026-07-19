@@ -1,0 +1,47 @@
+{
+  "name": "@journalseed/frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "generate:api": "openapi-typescript ../docs/openapi/journalseed.yaml -o src/lib/api/schema.d.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "@tanstack/svelte-query": "^5.81.0",
+    "@tanstack/svelte-table": "^8.21.3",
+    "@tanstack/svelte-virtual": "^3.13.12",
+    "lucide-svelte": "^0.468.0"
+  },
+  "devDependencies": {
+    "@fontsource-variable/dm-sans": "^5.2.6",
+    "@playwright/test": "^1.53.0",
+    "@sveltejs/adapter-static": "^3.0.8",
+    "@sveltejs/kit": "^2.22.0",
+    "@sveltejs/vite-plugin-svelte": "^5.1.0",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/svelte": "^5.2.8",
+    "@types/node": "^22.15.0",
+    "jsdom": "^26.1.0",
+    "openapi-typescript": "^7.8.0",
+    "prettier": "^3.5.3",
+    "prettier-plugin-svelte": "^3.4.0",
+    "svelte": "^5.34.0",
+    "svelte-check": "^4.2.1",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^3.2.3"
+  },
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=10"
+  }
+}

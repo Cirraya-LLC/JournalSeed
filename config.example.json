@@ -1,0 +1,11 @@
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "database_url": "postgresql://journalseed:journalseed@127.0.0.1:5432/journalseed",
+  "lua_dir": "./scripts/functions",
+  "static_dir": "./frontend/build",
+  "lua_poll_interval_ms": 750,
+  "interactive_db_connections": 8,
+  "background_db_connections": 2,
+  "background_workers": 2
+}
