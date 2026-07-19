@@ -82,25 +82,25 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    min-height: 72px;
-    padding: max(16px, env(safe-area-inset-top)) 20px 16px;
+    min-height: 64px;
+    padding: max(12px, env(safe-area-inset-top)) 18px 12px;
     border-bottom: 1px solid var(--line);
   }
 
   .drawer-header > div {
     display: grid;
-    gap: 2px;
+    gap: 0;
   }
 
   .drawer-header span {
     color: var(--accent-strong);
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     font-weight: 750;
   }
 
   .drawer-header h2 {
     margin: 0;
-    font-size: 1.25rem;
+    font-size: 1.125rem;
     line-height: 1.3;
   }
 

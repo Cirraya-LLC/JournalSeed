@@ -143,7 +143,7 @@
             inputmode="decimal"
             bind:value={amount}
             disabled={kind === 'note'}
-            placeholder={kind === 'entry' ? '-48.50 或 1250.00' : '500.00'}
+            placeholder={kind === 'entry' ? '-48.50 / 1250' : '500.00'}
             required
           />
         </div>
@@ -263,10 +263,11 @@
 
 <style>
   .entry-form {
-    display: grid;
-    gap: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
     min-height: 100%;
-    padding: 20px 20px max(20px, env(safe-area-inset-bottom));
+    padding: 18px 18px max(18px, env(safe-area-inset-bottom));
   }
 
   .segmented {
@@ -293,6 +294,10 @@
     background: transparent;
     font-size: 0.875rem;
     font-weight: 650;
+    transition:
+      color var(--duration-fast) var(--ease-out),
+      background var(--duration-fast) var(--ease-out),
+      box-shadow var(--duration-fast) var(--ease-out);
   }
 
   .segmented button.active {
@@ -301,11 +306,26 @@
     box-shadow: 0 1px 3px oklch(25% 0.02 155 / 0.1);
   }
 
+  .segmented button.active :global(svg) {
+    color: var(--accent-strong);
+  }
+
   .primary-fields,
   .account-grid {
     display: grid;
-    grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
-    gap: 12px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    gap: 10px;
+  }
+
+  .entry-form :global(.field) {
+    min-width: 0;
+    gap: 5px;
+  }
+
+  .entry-form :global(.input),
+  .entry-form :global(.select) {
+    min-width: 0;
   }
 
   .amount-field > div {
@@ -315,8 +335,9 @@
   .amount-field > div > :global(svg) {
     position: absolute;
     z-index: 1;
-    top: 12px;
+    top: 50%;
     left: 10px;
+    transform: translateY(-50%);
     color: var(--transfer);
     pointer-events: none;
   }
@@ -339,9 +360,9 @@
 
   .custom-fields {
     display: grid;
-    gap: 16px;
+    gap: 14px;
     margin: 0;
-    padding: 18px 0 0;
+    padding: 14px 0 0;
     border: 0;
     border-top: 1px solid var(--line);
   }
@@ -376,7 +397,7 @@
     align-items: center;
     gap: 8px;
     margin-top: auto;
-    padding-top: 16px;
+    padding-top: 12px;
     border-top: 1px solid var(--line);
   }
 
@@ -399,7 +420,7 @@
     animation: spin 700ms linear infinite;
   }
 
-  @media (max-width: 420px) {
+  @media (max-width: 350px) {
     .primary-fields,
     .account-grid {
       grid-template-columns: 1fr;

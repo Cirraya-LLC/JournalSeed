@@ -112,5 +112,6 @@ docs/adr/                模块化单体、类型化单元格、复式账务、L
 3. CSV 预览映射、COPY 分块导入、流式导出、取消和错误报告。
 4. `journal_bench seed/load/recalc`、50 万行压测、PGO/LTO 调优和可复现发布报告。
 
-依赖版本由根目录 `conan.lock` 和前端 `pnpm-lock.yaml` 固定；提交前请保持迁移、
-OpenAPI、测试和锁文件同步。
+依赖版本由根目录 `conan.lock` 和前端 `pnpm-lock.yaml` 固定。每次提交前必须核对
+README 与当前代码、启动命令、功能边界和验证方式一致，并保持迁移、OpenAPI、测试
+和锁文件同步。

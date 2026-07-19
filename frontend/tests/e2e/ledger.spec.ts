@@ -197,7 +197,23 @@ test('登录、桌面流水语义、详情抽屉与手机布局形成闭环', as
   await mobileList.getByRole('button', { name: /午餐/ }).click();
   const mobileDialog = page.getByRole('dialog');
   await expect(mobileDialog).toBeVisible();
-  await expect(mobileDialog.getByRole('button', { name: '保存流水' })).toBeAttached();
+  await expect(mobileDialog.getByRole('button', { name: '保存流水' })).toBeVisible();
+
+  const typeButtonHeight = await mobileDialog
+    .getByRole('button', { name: '收支' })
+    .evaluate((element) => element.getBoundingClientRect().height);
+  const amountInputHeight = await mobileDialog
+    .getByLabel('金额')
+    .evaluate((element) => element.getBoundingClientRect().height);
+  const [dateBox, amountBox] = await Promise.all([
+    mobileDialog.getByLabel('日期').boundingBox(),
+    mobileDialog.getByLabel('金额').boundingBox()
+  ]);
+  expect(typeButtonHeight).toBeLessThanOrEqual(48);
+  expect(amountInputHeight).toBeLessThanOrEqual(48);
+  expect(dateBox).not.toBeNull();
+  expect(amountBox).not.toBeNull();
+  expect(dateBox!.x + dateBox!.width).toBeLessThanOrEqual(amountBox!.x);
 
   expect(consoleErrors).toEqual([]);
   expect(pageErrors).toEqual([]);
