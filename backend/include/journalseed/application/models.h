@@ -195,7 +195,13 @@ struct LuaFunctionView {
     std::string name;
     std::string version;
     std::string description;
+    std::string script;
+    std::string source;
     std::vector<LuaParameterView> params;
+};
+
+struct LuaFunctionInput {
+    std::string source;
 };
 
 struct Problem {

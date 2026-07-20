@@ -336,12 +336,49 @@ paths:
       operationId: listFunctions
       responses:
         "200":
-          description: Current atomically published Lua function registry.
+          description: Current atomically published Lua function registry, including editable source.
           content:
             application/json:
               schema:
                 type: array
                 items: { $ref: "#/components/schemas/LuaFunction" }
+    post:
+      operationId: createFunction
+      parameters:
+        - $ref: "#/components/parameters/CsrfHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LuaFunctionInput" }
+      responses:
+        "201":
+          description: Lua script saved and registry reloaded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LuaFunction" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /functions/{name}:
+    patch:
+      operationId: updateFunction
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/CsrfHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LuaFunctionInput" }
+      responses:
+        "200":
+          description: Lua script updated and registry reloaded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LuaFunction" }
+        "409": { $ref: "#/components/responses/Conflict" }
   /functions/{name}/invoke:
     post:
       operationId: invokeFunction
@@ -589,11 +626,13 @@ components:
         rowCount: { type: integer, format: int64 }
     LuaFunction:
       type: object
-      required: [name, version, description, params]
+      required: [name, version, description, script, source, params]
       properties:
         name: { type: string }
         version: { type: string }
         description: { type: string }
+        script: { type: string }
+        source: { type: string }
         params:
           type: array
           items:
@@ -601,19 +640,32 @@ components:
             required: [name, type, label, required]
             properties:
               name: { type: string }
-              type: { type: string, enum: [text, number, date, boolean, option] }
+              type:
+                { type: string, enum: [text, number, date, boolean, option] }
               label: { type: string }
               required: { type: boolean }
               options:
                 type: array
                 items: { type: string }
+    LuaFunctionInput:
+      type: object
+      required: [source]
+      properties:
+        source:
+          type: string
+          minLength: 1
+          description: Lua file content returning the function definition table.
     Job:
       type: object
       required: [id, kind, status, done, total, createdAt]
       properties:
         id: { type: string, format: uuid }
         kind: { type: string, enum: [formula_recalc, csv_import, csv_export] }
-        status: { type: string, enum: [queued, running, completed, failed, cancelled] }
+        status:
+          {
+            type: string,
+            enum: [queued, running, completed, failed, cancelled],
+          }
         done: { type: integer, format: int64 }
         total: { type: integer, format: int64 }
         error: { type: [object, "null"] }

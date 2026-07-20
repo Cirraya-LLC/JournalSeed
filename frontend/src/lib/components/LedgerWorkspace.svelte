@@ -275,6 +275,20 @@
     await loadLedger();
   }
 
+  async function createFunction(source: string): Promise<LuaFunction> {
+    const saved = await api.createFunction({ source });
+    functions = await api.functions();
+    notify('success', `函数“${saved.name}”已保存`);
+    return saved;
+  }
+
+  async function updateFunction(name: string, source: string): Promise<LuaFunction> {
+    const saved = await api.updateFunction(name, { source });
+    functions = await api.functions();
+    notify('success', `函数“${saved.name}”已更新`);
+    return saved;
+  }
+
   async function createLedger(): Promise<void> {
     if (!newLedgerName.trim()) return;
     creatingLedger = true;
@@ -529,7 +543,12 @@
           onRecycle={recycleColumn}
         />
       {:else if view === 'functions'}
-        <FunctionsPanel {functions} onInvoke={(name, input) => api.invokeFunction(name, input)} />
+        <FunctionsPanel
+          {functions}
+          onInvoke={(name, input) => api.invokeFunction(name, input)}
+          onCreate={createFunction}
+          onUpdate={updateFunction}
+        />
       {:else}
         <RecyclePanel
           rows={recycledRows}

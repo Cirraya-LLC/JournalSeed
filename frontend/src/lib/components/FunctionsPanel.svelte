@@ -1,5 +1,15 @@
 <script lang="ts">
-  import { Braces, Check, LoaderCircle, Play, RotateCw } from 'lucide-svelte';
+  import {
+    Braces,
+    Check,
+    Code2,
+    LoaderCircle,
+    PencilLine,
+    Play,
+    Plus,
+    RotateCw,
+    Save
+  } from 'lucide-svelte';
   import { errorMessage } from '$lib/format';
   import type { LuaFunction } from '$lib/types';
 
@@ -8,21 +18,111 @@
     name: string,
     input: Record<string, unknown>
   ) => Promise<Record<string, unknown>>;
+  export let onCreate: (source: string) => Promise<LuaFunction>;
+  export let onUpdate: (name: string, source: string) => Promise<LuaFunction>;
 
   let selectedName = '';
   let values: Record<string, string | boolean> = {};
   let invoking = false;
   let result: Record<string, unknown> | null = null;
   let error = '';
+  let mode: 'run' | 'edit' = 'run';
+  let creatingFunction = false;
+  let editorTargetName: string | null = null;
+  let editorSource = '';
+  let editorError = '';
+  let savingFunction = false;
 
-  $: selected = functions.find((item) => item.name === selectedName) ?? functions[0] ?? null;
-  $: if (!selectedName && functions.length > 0) selectedName = functions[0].name;
+  $: selected = creatingFunction
+    ? null
+    : (functions.find((item) => item.name === selectedName) ?? functions[0] ?? null);
+  $: if (!creatingFunction && !selectedName && functions.length > 0)
+    selectedName = functions[0].name;
+
+  function functionTemplate(): string {
+    const names = new Set(functions.map((item) => item.name));
+    let index = 1;
+    let name = 'custom_function';
+    while (names.has(name)) name = `custom_function_${++index}`;
+    return `return {
+  name = "${name}",
+  version = "1.0.0",
+  description = "自定义函数：预览后可把结果回填到流水。",
+  params = {
+    { name = "amount", type = "number", label = "金额", required = true },
+    { name = "description", type = "text", label = "说明", required = false }
+  },
+  run = function(params)
+    local amount = dec(params.amount or "0")
+    return {
+      amount = tostring(amount),
+      description = params.description or ""
+    }
+  end
+}
+`;
+  }
 
   function choose(item: LuaFunction): void {
     selectedName = item.name;
+    creatingFunction = false;
+    mode = 'run';
     values = {};
     result = null;
     error = '';
+    editorError = '';
+  }
+
+  function startCreate(): void {
+    selectedName = '';
+    creatingFunction = true;
+    mode = 'edit';
+    editorTargetName = null;
+    editorSource = functionTemplate();
+    editorError = '';
+    error = '';
+    result = null;
+  }
+
+  function startEdit(): void {
+    if (!selected) return;
+    creatingFunction = false;
+    mode = 'edit';
+    editorTargetName = selected.name;
+    editorSource = selected.source || functionTemplate();
+    editorError = '';
+  }
+
+  function cancelEdit(): void {
+    creatingFunction = false;
+    mode = 'run';
+    editorTargetName = null;
+    editorError = '';
+    if (!selectedName && functions[0]) selectedName = functions[0].name;
+  }
+
+  async function saveSource(): Promise<void> {
+    editorError = '';
+    if (!editorSource.trim()) {
+      editorError = '请填写 Lua 函数定义';
+      return;
+    }
+    savingFunction = true;
+    try {
+      const saved = editorTargetName
+        ? await onUpdate(editorTargetName, editorSource)
+        : await onCreate(editorSource);
+      selectedName = saved.name;
+      creatingFunction = false;
+      mode = 'run';
+      editorTargetName = null;
+      values = {};
+      result = null;
+    } catch (reason) {
+      editorError = errorMessage(reason);
+    } finally {
+      savingFunction = false;
+    }
   }
 
   async function invoke(): Promise<void> {
@@ -52,14 +152,25 @@
       <span>自动化</span>
       <h2>命名函数</h2>
     </div>
-    <span class="registry-status"><i></i>{functions.length} 个函数已载入</span>
+    <div class="header-actions">
+      <span class="registry-status"><i></i>{functions.length} 个函数已载入</span>
+      <button class="button" type="button" on:click={startCreate}>
+        <Plus size={16} />新建函数
+      </button>
+    </div>
   </header>
 
   <div class="functions-layout">
     <nav class="function-list" aria-label="函数列表">
+      {#if creatingFunction}
+        <button class="active" type="button" on:click={startCreate}>
+          <span class="function-icon"><Code2 size={18} /></span>
+          <span><strong>新函数草稿</strong><small>未保存</small></span>
+        </button>
+      {/if}
       {#each functions as item}
         <button
-          class:active={selected?.name === item.name}
+          class:active={!creatingFunction && selected?.name === item.name}
           type="button"
           on:click={() => choose(item)}
         >
@@ -67,18 +178,61 @@
           <span><strong>{item.name}</strong><small>v{item.version}</small></span>
         </button>
       {:else}
-        <div class="function-empty"><Braces size={22} /><span>函数目录中还没有有效脚本</span></div>
+        {#if !creatingFunction}
+          <div class="function-empty">
+            <Braces size={22} /><span>函数目录中还没有有效脚本</span>
+          </div>
+        {/if}
       {/each}
     </nav>
 
     <section class="runner">
-      {#if selected}
+      {#if mode === 'edit'}
+        <header class="runner-header editor-header">
+          <div>
+            <span>{creatingFunction ? '新建 Lua 函数' : '编辑 Lua 函数'}</span>
+            <h3>{creatingFunction ? '自定义函数' : editorTargetName}</h3>
+          </div>
+          <p>
+            每个脚本需要返回包含 name、version、description、params 和 run 的 table。
+            数字参数以字符串传入，精确计算使用 dec("0.1")。
+          </p>
+        </header>
+
+        <form class="editor-form" on:submit|preventDefault={saveSource}>
+          <label class="field source-field" for="function-source">
+            <span class="field-label">Lua 源码</span>
+            <textarea
+              id="function-source"
+              class="textarea source-editor"
+              bind:value={editorSource}
+              spellcheck="false"
+              autocomplete="off"
+            ></textarea>
+          </label>
+          {#if editorError}<p class="field-error" role="alert">{editorError}</p>{/if}
+          <footer class="editor-actions">
+            <button class="button" type="button" disabled={savingFunction} on:click={cancelEdit}>
+              取消
+            </button>
+            <button class="button primary" type="submit" disabled={savingFunction}>
+              {#if savingFunction}<LoaderCircle
+                  class="spinner-icon"
+                  size={18}
+                />正在保存{:else}<Save size={17} />保存函数{/if}
+            </button>
+          </footer>
+        </form>
+      {:else if selected}
         <header class="runner-header">
           <div>
             <span>v{selected.version}</span>
             <h3>{selected.name}</h3>
           </div>
           <p>{selected.description}</p>
+          <button class="button edit-button" type="button" on:click={startEdit}>
+            <PencilLine size={16} />编辑脚本
+          </button>
         </header>
 
         <form on:submit|preventDefault={invoke} class="runner-form">
@@ -146,7 +300,13 @@
           {/if}
         </section>
       {:else}
-        <div class="runner-empty"><Braces size={28} /><strong>等待函数脚本</strong></div>
+        <div class="runner-empty">
+          <Braces size={28} />
+          <strong>等待函数脚本</strong>
+          <button class="button primary" type="button" on:click={startCreate}>
+            <Plus size={17} />新建函数
+          </button>
+        </div>
       {/if}
     </section>
   </div>
@@ -208,6 +368,23 @@
     border-radius: 50%;
     background: var(--income);
     box-shadow: 0 0 0 3px var(--income-soft);
+  }
+
+  .header-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .header-actions .button,
+  .edit-button,
+  .editor-actions .button,
+  .runner-empty .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    white-space: nowrap;
   }
 
   .functions-layout {
@@ -296,10 +473,15 @@
 
   .runner-header {
     display: grid;
-    grid-template-columns: minmax(160px, 0.4fr) minmax(220px, 1fr);
+    grid-template-columns: minmax(160px, 0.35fr) minmax(220px, 1fr) auto;
+    align-items: end;
     gap: 18px;
     padding-bottom: 16px;
     border-bottom: 1px solid var(--line);
+  }
+
+  .editor-header {
+    grid-template-columns: minmax(160px, 0.35fr) minmax(220px, 1fr);
   }
 
   .runner-header p {
@@ -313,6 +495,34 @@
     display: grid;
     gap: 14px;
     padding-block: 18px;
+  }
+
+  .editor-form {
+    display: grid;
+    gap: 12px;
+    padding-top: 16px;
+  }
+
+  .source-field {
+    display: grid;
+    gap: 6px;
+  }
+
+  .source-editor {
+    min-height: min(52vh, 520px);
+    padding: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.8125rem;
+    line-height: 1.55;
+    tab-size: 2;
+  }
+
+  .editor-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
   }
 
   .parameter-grid {
@@ -422,6 +632,14 @@
     .runner-header {
       grid-template-columns: 1fr;
       gap: 8px;
+    }
+
+    .header-actions {
+      gap: 8px;
+    }
+
+    .registry-status {
+      display: none;
     }
   }
 </style>

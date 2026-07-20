@@ -62,6 +62,8 @@ return {
     journalseed::lua::FunctionRegistry registry({.directory = scripts.path()});
     REQUIRE(registry.reload() == 1);
     REQUIRE(registry.list().front().name == "expense");
+    REQUIRE(registry.list().front().script == "expense.lua");
+    REQUIRE(registry.list().front().source.find("exact expense") != std::string::npos);
 
     journalseed::lua::LuaValue::Object input;
     input.emplace("amount", journalseed::lua::LuaValue{.value = std::string("12.50")});
@@ -75,6 +77,61 @@ return {
     REQUIRE_FALSE(registry.reload().has_value());
     REQUIRE(registry.list().size() == 1);
     REQUIRE(registry.invoke("expense", input).has_value());
+}
+
+TEST_CASE("Lua registry creates and updates editable scripts with rollback") {
+    TemporaryDirectory scripts;
+    journalseed::lua::FunctionRegistry registry({.directory = scripts.path()});
+    REQUIRE(registry.reload() == 0);
+
+    const auto created = registry.create(R"LUA(
+return {
+  name = "custom",
+  version = "1.0.0",
+  description = "created from API",
+  params = {{ name = "amount", type = "number", label = "Amount", required = true }},
+  run = function(params)
+    return { amount = tostring(dec(params.amount) * dec("2")) }
+  end
+}
+)LUA");
+    REQUIRE(created.has_value());
+    REQUIRE(created->name == "custom");
+    REQUIRE(std::filesystem::exists(scripts.path() / "custom.lua"));
+    REQUIRE(registry.list().size() == 1);
+
+    journalseed::lua::LuaValue::Object input;
+    input.emplace("amount", journalseed::lua::LuaValue{.value = std::string("7.50")});
+    auto invoked = registry.invoke("custom", input);
+    REQUIRE(invoked.has_value());
+    REQUIRE(std::get<std::string>(
+                std::get<journalseed::lua::LuaValue::Object>(invoked->value).at("amount").value) ==
+            "15.00");
+
+    const auto updated = registry.update("custom", R"LUA(
+return {
+  name = "custom",
+  version = "1.1.0",
+  description = "updated from API",
+  params = {{ name = "amount", type = "number", label = "Amount", required = true }},
+  run = function(params)
+    return { amount = tostring(dec(params.amount) * dec("3")) }
+  end
+}
+)LUA");
+    REQUIRE(updated.has_value());
+    REQUIRE(updated->version == "1.1.0");
+    invoked = registry.invoke("custom", input);
+    REQUIRE(invoked.has_value());
+    REQUIRE(std::get<std::string>(
+                std::get<journalseed::lua::LuaValue::Object>(invoked->value).at("amount").value) ==
+            "22.50");
+
+    const auto broken = registry.update("custom", "return { name = 'broken' }");
+    REQUIRE_FALSE(broken.has_value());
+    REQUIRE(registry.list().front().name == "custom");
+    REQUIRE(registry.list().front().version == "1.1.0");
+    REQUIRE(registry.invoke("custom", input).has_value());
 }
 
 TEST_CASE("Lua registry interrupts scripts that exceed the instruction budget") {

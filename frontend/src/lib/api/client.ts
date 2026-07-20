@@ -8,6 +8,7 @@ import type {
   Ledger,
   LedgerSummary,
   LuaFunction,
+  LuaFunctionInput,
   ProblemDetails,
   RowInput,
   RowPage,
@@ -204,6 +205,17 @@ class JournalSeedApi {
 
   functions(): Promise<LuaFunction[]> {
     return this.request('/functions');
+  }
+
+  createFunction(input: LuaFunctionInput): Promise<LuaFunction> {
+    return this.request('/functions', { method: 'POST', body: JSON.stringify(input) });
+  }
+
+  updateFunction(name: string, input: LuaFunctionInput): Promise<LuaFunction> {
+    return this.request(`/functions/${encodeURIComponent(name)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input)
+    });
   }
 
   invokeFunction(name: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {

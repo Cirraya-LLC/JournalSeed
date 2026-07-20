@@ -8,6 +8,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -34,6 +35,8 @@ struct FunctionMetadata {
     std::string name;
     std::string version;
     std::string description;
+    std::string script;
+    std::string source;
     std::vector<FunctionParameter> params;
 };
 
@@ -44,6 +47,8 @@ enum class RegistryErrorCode {
     function_missing,
     execution_error,
     limit_exceeded,
+    write_error,
+    function_conflict,
 };
 
 struct RegistryError {
@@ -72,6 +77,10 @@ class FunctionRegistry final {
 
     [[nodiscard]] std::expected<std::size_t, RegistryError> reload();
     [[nodiscard]] std::vector<FunctionMetadata> list() const;
+    [[nodiscard]] std::expected<FunctionMetadata, RegistryError>
+    create(std::string source);
+    [[nodiscard]] std::expected<FunctionMetadata, RegistryError>
+    update(std::string_view name, std::string source);
     [[nodiscard]] std::expected<LuaValue, RegistryError>
     invoke(std::string_view name, const LuaValue::Object &parameters) const;
 
@@ -80,10 +89,12 @@ class FunctionRegistry final {
 
   private:
     struct Registry;
+    [[nodiscard]] std::expected<std::size_t, RegistryError> reload_unlocked();
     [[nodiscard]] std::string directory_signature() const;
 
     FunctionRegistryOptions options_;
     std::shared_ptr<const Registry> registry_;
+    mutable std::mutex update_mutex_;
     std::jthread watcher_;
 };
 

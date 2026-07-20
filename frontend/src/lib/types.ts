@@ -114,7 +114,13 @@ export interface LuaFunction {
   name: string;
   version: string;
   description: string;
+  script: string;
+  source: string;
   params: LuaParam[];
+}
+
+export interface LuaFunctionInput {
+  source: string;
 }
 
 export interface ProblemDetails {

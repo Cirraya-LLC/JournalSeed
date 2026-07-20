@@ -15,7 +15,7 @@ This repository currently provides a runnable first end-to-end loop:
 - Single administrator with multiple ledgers; ledgers, user-defined accounts, income/expense categories, account balances, and period income/expense summaries.
 - Income, expense, transfer, and zero-amount note rows; transfers appear as one neutral row in the table and are stored as two balanced postings.
 - Default system columns are date, description, account, category, and amount; text and boolean custom columns are supported, and both rows and columns can be recycled and restored.
-- Cursor pagination, date/amount sorting, problem-detail JSON responses, authenticated SSE, hot-reloaded Lua named functions, and a restricted exact-decimal runtime.
+- Cursor pagination, date/amount sorting, problem-detail JSON responses, authenticated SSE, hot-reloaded Lua named functions, in-browser Lua script creation/editing, and a restricted exact-decimal runtime.
 - Drogon serves the SvelteKit static build on the same origin; the compact desktop table, mobile list, detail drawer, and Chinese navigation are covered by browser acceptance tests.
 
 The following capabilities are reserved in the database/API structure but are not claimed as completed
@@ -108,7 +108,7 @@ Environment variables:
 ### Verification
 
 ```sh
-# C++ unit tests, currently 16 tests
+# C++ unit tests, currently 17 tests
 ctest --test-dir build/server-check --output-on-failure
 
 # Frontend type checks, unit tests, formatting check, and production build
@@ -171,7 +171,7 @@ Current main routes:
 - `/ledgers/{ledgerId}/rows`
 - `/rows/{rowId}`, `/rows/{rowId}/restore`
 - `/columns/{columnId}`, `/columns/{columnId}/restore`
-- `/functions`, `/functions/{name}/invoke`
+- `/functions`, `/functions/{name}`, `/functions/{name}/invoke`
 - `/jobs`, `/jobs/{jobId}/cancel`
 - `/events`
 
@@ -195,8 +195,10 @@ return {
 }
 ```
 
-The registry hot-reloads the directory by polling. A new snapshot replaces the current registry only
-after all scripts validate successfully; on validation failure, the previous valid snapshot remains active.
+The registry hot-reloads the directory by polling. Lua scripts can also be created or edited from the
+Functions page. Saving validates and reloads the full script set first; a new snapshot replaces the
+current registry only after all scripts validate successfully, and validation failures keep the previous
+valid snapshot active while rolling the file change back.
 
 ### Roadmap
 

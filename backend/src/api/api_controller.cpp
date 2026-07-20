@@ -543,6 +543,29 @@ void ApiController::register_routes() {
         {drogon::Get});
 
     drogon::app().registerHandler(
+        "/api/v1/functions",
+        [self](HttpRequestPtr request) -> drogon::Task<HttpResponsePtr> {
+            auto auth = co_await authorize(self->service_, request, true);
+            if (!auth) co_return problem_response(auth.error());
+            auto input = parse_body<application::LuaFunctionInput>(request);
+            if (!input) co_return problem_response(input.error());
+            co_return result_response(self->service_->create_function(std::move(*input)), 201);
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        "/api/v1/functions/{name}",
+        [self](HttpRequestPtr request,
+               std::string name) -> drogon::Task<HttpResponsePtr> {
+            auto auth = co_await authorize(self->service_, request, true);
+            if (!auth) co_return problem_response(auth.error());
+            auto input = parse_body<application::LuaFunctionInput>(request);
+            if (!input) co_return problem_response(input.error());
+            co_return result_response(self->service_->update_function(name, std::move(*input)));
+        },
+        {drogon::Patch});
+
+    drogon::app().registerHandler(
         "/api/v1/functions/{name}/invoke",
         [self](HttpRequestPtr request,
                std::string name) -> drogon::Task<HttpResponsePtr> {

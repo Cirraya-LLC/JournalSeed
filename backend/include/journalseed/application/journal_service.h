@@ -74,6 +74,8 @@ class JournalService final {
     [[nodiscard]] drogon::Task<ServiceResult<std::monostate>>
     restore_row(std::string_view row_id) const;
     [[nodiscard]] std::vector<LuaFunctionView> functions() const;
+    [[nodiscard]] ServiceResult<LuaFunctionView> create_function(LuaFunctionInput input) const;
+    [[nodiscard]] ServiceResult<LuaFunctionView> update_function(std::string_view name, LuaFunctionInput input) const;
     [[nodiscard]] ServiceResult<lua::LuaValue>
     invoke_function(std::string_view name, const lua::LuaValue::Object &input) const;
     [[nodiscard]] drogon::Task<ServiceResult<std::vector<JobView>>> jobs() const;

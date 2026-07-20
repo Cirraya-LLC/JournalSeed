@@ -6,7 +6,10 @@
 #include <sol/sol.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 #include <limits>
 #include <mutex>
 #include <sstream>
@@ -183,43 +186,21 @@ std::expected<FunctionParameter, RegistryError> parse_parameter(const sol::table
     return parameter;
 }
 
-}  // namespace
+std::shared_ptr<sol::state> make_sandbox_state() {
+    auto state = std::make_shared<sol::state>();
+    state->open_libraries(sol::lib::base, sol::lib::math, sol::lib::string,
+                          sol::lib::table, sol::lib::utf8);
+    (*state)["os"] = sol::lua_nil;
+    (*state)["io"] = sol::lua_nil;
+    (*state)["package"] = sol::lua_nil;
+    (*state)["debug"] = sol::lua_nil;
+    (*state)["require"] = sol::lua_nil;
+    (*state)["dofile"] = sol::lua_nil;
+    (*state)["loadfile"] = sol::lua_nil;
+    (*state)["load"] = sol::lua_nil;
+    (*state)["collectgarbage"] = sol::lua_nil;
 
-struct FunctionRegistry::Registry {
-    std::shared_ptr<sol::state> state;
-    std::map<std::string, FunctionEntry> functions;
-    mutable std::mutex execution_mutex;
-};
-
-FunctionRegistry::FunctionRegistry(FunctionRegistryOptions options)
-    : options_(std::move(options)), registry_(std::make_shared<const Registry>()) {}
-
-FunctionRegistry::~FunctionRegistry() { stop(); }
-
-std::expected<std::size_t, RegistryError> FunctionRegistry::reload() {
-    std::error_code filesystem_error;
-    if (!std::filesystem::exists(options_.directory, filesystem_error) || filesystem_error) {
-        return std::unexpected(registry_error(
-            RegistryErrorCode::directory_error,
-            "Lua 函数目录不存在：" + options_.directory.string()));
-    }
-
-    auto candidate = std::make_shared<Registry>();
-    candidate->state = std::make_shared<sol::state>();
-    auto &state = *candidate->state;
-    state.open_libraries(sol::lib::base, sol::lib::math, sol::lib::string,
-                         sol::lib::table, sol::lib::utf8);
-    state["os"] = sol::lua_nil;
-    state["io"] = sol::lua_nil;
-    state["package"] = sol::lua_nil;
-    state["debug"] = sol::lua_nil;
-    state["require"] = sol::lua_nil;
-    state["dofile"] = sol::lua_nil;
-    state["loadfile"] = sol::lua_nil;
-    state["load"] = sol::lua_nil;
-    state["collectgarbage"] = sol::lua_nil;
-
-    state.new_usertype<Decimal>(
+    state->new_usertype<Decimal>(
         "Decimal",
         sol::no_constructor,
         sol::meta_function::addition,
@@ -236,7 +217,179 @@ std::expected<std::size_t, RegistryError> FunctionRegistry::reload() {
         &Decimal::operator==,
         sol::meta_function::to_string,
         &Decimal::to_string);
-    state.set_function("dec", [](const std::string &value) { return Decimal(value); });
+    state->set_function("dec", [](const std::string &value) { return Decimal(value); });
+    return state;
+}
+
+std::expected<std::string, RegistryError> read_file(const std::filesystem::path &path,
+                                                    const std::string &script_name) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        return std::unexpected(registry_error(
+            RegistryErrorCode::directory_error, "读取 Lua 脚本失败：" + path.string(), script_name));
+    }
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    return buffer.str();
+}
+
+std::expected<void, RegistryError> write_file_atomically(const std::filesystem::path &path,
+                                                         std::string_view source) {
+    std::error_code error_code;
+    std::filesystem::create_directories(path.parent_path(), error_code);
+    if (error_code) {
+        return std::unexpected(registry_error(
+            RegistryErrorCode::write_error,
+            "创建 Lua 函数目录失败：" + error_code.message(),
+            path.filename().string()));
+    }
+
+    auto temporary = path;
+    temporary += ".tmp";
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            return std::unexpected(registry_error(
+                RegistryErrorCode::write_error,
+                "写入临时 Lua 脚本失败：" + temporary.string(),
+                path.filename().string()));
+        }
+        output << source;
+        if (!output) {
+            return std::unexpected(registry_error(
+                RegistryErrorCode::write_error,
+                "写入 Lua 脚本内容失败：" + temporary.string(),
+                path.filename().string()));
+        }
+    }
+
+    std::filesystem::rename(temporary, path, error_code);
+    if (error_code) {
+        std::filesystem::remove(path, error_code);
+        error_code.clear();
+        std::filesystem::rename(temporary, path, error_code);
+    }
+    if (error_code) {
+        return std::unexpected(registry_error(
+            RegistryErrorCode::write_error,
+            "保存 Lua 脚本失败：" + error_code.message(),
+            path.filename().string()));
+    }
+    return {};
+}
+
+std::string script_filename_for(std::string_view function_name) {
+    std::ostringstream result;
+    result << std::nouppercase << std::hex << std::setfill('0');
+    for (const char character : std::string(function_name)) {
+        const auto byte = static_cast<unsigned char>(character);
+        if (std::isalnum(byte) || byte == '_' || byte == '-') {
+            result << character;
+        } else {
+            result << '_' << std::setw(2) << static_cast<int>(byte);
+        }
+    }
+    auto name = result.str();
+    if (name.empty()) name = "function";
+    if (name.size() > 160) name.resize(160);
+    return name + ".lua";
+}
+
+std::expected<FunctionEntry, RegistryError> parse_definition(
+    const sol::protected_function_result &executed,
+    const std::string &script_name,
+    std::string source) {
+    if (executed.get_type() != sol::type::table) {
+        return std::unexpected(registry_error(
+            RegistryErrorCode::schema_error,
+            "脚本必须返回函数定义 table",
+            script_name));
+    }
+
+    const sol::table definition = executed;
+    FunctionEntry function;
+    function.metadata.name = definition.get_or("name", std::string{});
+    function.metadata.version = definition.get_or("version", std::string{});
+    function.metadata.description = definition.get_or("description", std::string{});
+    function.metadata.script = script_name;
+    function.metadata.source = std::move(source);
+    function.run = definition["run"];
+    if (function.metadata.name.empty() || function.metadata.version.empty() ||
+        !function.run.valid()) {
+        return std::unexpected(registry_error(
+            RegistryErrorCode::schema_error,
+            "函数定义需要 name、version、description 和 run",
+            script_name));
+    }
+
+    if (auto params = definition["params"];
+        params.valid() && params.get_type() == sol::type::table) {
+        for (const auto &item : params.get<sol::table>()) {
+            if (item.second.get_type() != sol::type::table) {
+                return std::unexpected(registry_error(
+                    RegistryErrorCode::schema_error,
+                    "params 中的每一项必须是 table",
+                    script_name));
+            }
+            auto parameter = parse_parameter(item.second.as<sol::table>(), script_name);
+            if (!parameter) return std::unexpected(parameter.error());
+            function.metadata.params.push_back(std::move(*parameter));
+        }
+    }
+
+    return function;
+}
+
+std::expected<FunctionMetadata, RegistryError> inspect_source(std::string_view source,
+                                                              const std::string &script_name) {
+    auto state = make_sandbox_state();
+    sol::load_result loaded = state->load(std::string(source), script_name);
+    if (!loaded.valid()) {
+        const sol::error load_error = loaded;
+        return std::unexpected(registry_error(
+            RegistryErrorCode::script_error, load_error.what(), script_name));
+    }
+    sol::protected_function chunk = loaded;
+    sol::protected_function_result executed = chunk();
+    if (!executed.valid()) {
+        const sol::error execution_error = executed;
+        return std::unexpected(registry_error(
+            RegistryErrorCode::script_error, execution_error.what(), script_name));
+    }
+    auto parsed = parse_definition(executed, script_name, std::string(source));
+    if (!parsed) return std::unexpected(parsed.error());
+    return parsed->metadata;
+}
+
+}  // namespace
+
+struct FunctionRegistry::Registry {
+    std::shared_ptr<sol::state> state;
+    std::map<std::string, FunctionEntry> functions;
+    mutable std::mutex execution_mutex;
+};
+
+FunctionRegistry::FunctionRegistry(FunctionRegistryOptions options)
+    : options_(std::move(options)), registry_(std::make_shared<const Registry>()) {}
+
+FunctionRegistry::~FunctionRegistry() { stop(); }
+
+std::expected<std::size_t, RegistryError> FunctionRegistry::reload() {
+    std::scoped_lock lock(update_mutex_);
+    return reload_unlocked();
+}
+
+std::expected<std::size_t, RegistryError> FunctionRegistry::reload_unlocked() {
+    std::error_code filesystem_error;
+    if (!std::filesystem::exists(options_.directory, filesystem_error) || filesystem_error) {
+        return std::unexpected(registry_error(
+            RegistryErrorCode::directory_error,
+            "Lua 函数目录不存在：" + options_.directory.string()));
+    }
+
+    auto candidate = std::make_shared<Registry>();
+    candidate->state = make_sandbox_state();
+    auto &state = *candidate->state;
 
     std::vector<std::filesystem::path> scripts;
     for (const auto &entry : std::filesystem::directory_iterator(options_.directory, filesystem_error)) {
@@ -253,6 +406,8 @@ std::expected<std::size_t, RegistryError> FunctionRegistry::reload() {
 
     for (const auto &script : scripts) {
         const std::string script_name = script.filename().string();
+        auto source = read_file(script, script_name);
+        if (!source) return std::unexpected(source.error());
         sol::load_result loaded = state.load_file(script.string());
         if (!loaded.valid()) {
             const sol::error load_error = loaded;
@@ -266,41 +421,9 @@ std::expected<std::size_t, RegistryError> FunctionRegistry::reload() {
             return std::unexpected(registry_error(
                 RegistryErrorCode::script_error, execution_error.what(), script_name));
         }
-        if (executed.get_type() != sol::type::table) {
-            return std::unexpected(registry_error(
-                RegistryErrorCode::schema_error,
-                "脚本必须返回函数定义 table",
-                script_name));
-        }
-
-        const sol::table definition = executed;
-        FunctionEntry function;
-        function.metadata.name = definition.get_or("name", std::string{});
-        function.metadata.version = definition.get_or("version", std::string{});
-        function.metadata.description = definition.get_or("description", std::string{});
-        function.run = definition["run"];
-        if (function.metadata.name.empty() || function.metadata.version.empty() ||
-            !function.run.valid()) {
-            return std::unexpected(registry_error(
-                RegistryErrorCode::schema_error,
-                "函数定义需要 name、version、description 和 run",
-                script_name));
-        }
-
-        if (auto params = definition["params"];
-            params.valid() && params.get_type() == sol::type::table) {
-            for (const auto &item : params.get<sol::table>()) {
-                if (item.second.get_type() != sol::type::table) {
-                    return std::unexpected(registry_error(
-                        RegistryErrorCode::schema_error,
-                        "params 中的每一项必须是 table",
-                        script_name));
-                }
-                auto parameter = parse_parameter(item.second.as<sol::table>(), script_name);
-                if (!parameter) return std::unexpected(parameter.error());
-                function.metadata.params.push_back(std::move(*parameter));
-            }
-        }
+        auto parsed = parse_definition(executed, script_name, std::move(*source));
+        if (!parsed) return std::unexpected(parsed.error());
+        auto function = std::move(*parsed);
 
         if (!candidate->functions.emplace(function.metadata.name, std::move(function)).second) {
             return std::unexpected(registry_error(
@@ -324,6 +447,123 @@ std::vector<FunctionMetadata> FunctionRegistry::list() const {
         result.push_back(function.metadata);
     }
     return result;
+}
+
+std::expected<FunctionMetadata, RegistryError> FunctionRegistry::create(std::string source) {
+    std::scoped_lock lock(update_mutex_);
+    auto metadata = inspect_source(source, "new_function.lua");
+    if (!metadata) return std::unexpected(metadata.error());
+
+    const auto snapshot = std::atomic_load_explicit(&registry_, std::memory_order_acquire);
+    if (snapshot->functions.contains(metadata->name)) {
+        return std::unexpected(registry_error(
+            RegistryErrorCode::function_conflict,
+            "函数名称已存在：" + metadata->name,
+            metadata->name));
+    }
+
+    const auto script_name = script_filename_for(metadata->name);
+    const auto path = options_.directory / script_name;
+    std::error_code filesystem_error;
+    if (std::filesystem::exists(path, filesystem_error) && !filesystem_error) {
+        return std::unexpected(registry_error(
+            RegistryErrorCode::function_conflict,
+            "Lua 脚本文件已存在：" + script_name,
+            script_name));
+    }
+
+    if (auto written = write_file_atomically(path, source); !written) {
+        return std::unexpected(written.error());
+    }
+    auto reloaded = reload_unlocked();
+    if (!reloaded) {
+        std::filesystem::remove(path, filesystem_error);
+        static_cast<void>(reload_unlocked());
+        return std::unexpected(reloaded.error());
+    }
+
+    const auto next = std::atomic_load_explicit(&registry_, std::memory_order_acquire);
+    if (const auto found = next->functions.find(metadata->name); found != next->functions.end()) {
+        return found->second.metadata;
+    }
+    return std::unexpected(registry_error(
+        RegistryErrorCode::script_error,
+        "Lua 脚本保存后未出现在注册表中：" + metadata->name,
+        script_name));
+}
+
+std::expected<FunctionMetadata, RegistryError>
+FunctionRegistry::update(std::string_view name, std::string source) {
+    std::scoped_lock lock(update_mutex_);
+    const auto snapshot = std::atomic_load_explicit(&registry_, std::memory_order_acquire);
+    const auto existing = snapshot->functions.find(std::string(name));
+    if (existing == snapshot->functions.end()) {
+        return std::unexpected(registry_error(
+            RegistryErrorCode::function_missing, "未找到命名函数：" + std::string(name)));
+    }
+
+    const auto old_script = existing->second.metadata.script;
+    const auto old_path = options_.directory / old_script;
+    auto old_source = read_file(old_path, old_script);
+    if (!old_source) {
+        old_source = existing->second.metadata.source;
+    }
+
+    auto metadata = inspect_source(source, old_script);
+    if (!metadata) return std::unexpected(metadata.error());
+    if (metadata->name != name && snapshot->functions.contains(metadata->name)) {
+        return std::unexpected(registry_error(
+            RegistryErrorCode::function_conflict,
+            "函数名称已存在：" + metadata->name,
+            metadata->name));
+    }
+
+    const auto new_script = script_filename_for(metadata->name);
+    const auto new_path = options_.directory / new_script;
+    const bool same_path = old_path.lexically_normal() == new_path.lexically_normal();
+
+    std::error_code filesystem_error;
+    if (!same_path && std::filesystem::exists(new_path, filesystem_error) && !filesystem_error) {
+        return std::unexpected(registry_error(
+            RegistryErrorCode::function_conflict,
+            "Lua 脚本文件已存在：" + new_script,
+            new_script));
+    }
+
+    if (auto written = write_file_atomically(same_path ? old_path : new_path, source); !written) {
+        return std::unexpected(written.error());
+    }
+    if (!same_path) {
+        std::filesystem::remove(old_path, filesystem_error);
+        if (filesystem_error) {
+            std::filesystem::remove(new_path, filesystem_error);
+            return std::unexpected(registry_error(
+                RegistryErrorCode::write_error,
+                "移除旧 Lua 脚本失败：" + filesystem_error.message(),
+                old_script));
+        }
+    }
+
+    auto reloaded = reload_unlocked();
+    if (!reloaded) {
+        if (same_path) {
+            write_file_atomically(old_path, *old_source);
+        } else {
+            std::filesystem::remove(new_path, filesystem_error);
+            write_file_atomically(old_path, *old_source);
+        }
+        static_cast<void>(reload_unlocked());
+        return std::unexpected(reloaded.error());
+    }
+
+    const auto next = std::atomic_load_explicit(&registry_, std::memory_order_acquire);
+    if (const auto found = next->functions.find(metadata->name); found != next->functions.end()) {
+        return found->second.metadata;
+    }
+    return std::unexpected(registry_error(
+        RegistryErrorCode::script_error,
+        "Lua 脚本保存后未出现在注册表中：" + metadata->name,
+        new_script));
 }
 
 std::expected<LuaValue, RegistryError>

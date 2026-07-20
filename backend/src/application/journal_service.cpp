@@ -41,6 +41,57 @@ ServiceResult<T> database_failure(const std::exception &exception) {
     });
 }
 
+LuaFunctionView lua_function_view(const lua::FunctionMetadata &function) {
+    LuaFunctionView view{
+        .name = function.name,
+        .version = function.version,
+        .description = function.description,
+        .script = function.script,
+        .source = function.source,
+        .params = {},
+    };
+    for (const auto &parameter : function.params) {
+        view.params.push_back(LuaParameterView{
+            .name = parameter.name,
+            .type = parameter.type,
+            .label = parameter.label,
+            .required = parameter.required,
+            .options = parameter.options,
+        });
+    }
+    return view;
+}
+
+template <typename T>
+ServiceResult<T> lua_failure(const lua::RegistryError &error) {
+    std::uint16_t status = 422;
+    std::string code = "lua_execution_error";
+    if (error.code == lua::RegistryErrorCode::function_missing) {
+        status = 404;
+        code = "function_missing";
+    } else if (error.code == lua::RegistryErrorCode::directory_error ||
+               error.code == lua::RegistryErrorCode::write_error) {
+        status = 500;
+        code = "lua_write_error";
+    } else if (error.code == lua::RegistryErrorCode::function_conflict) {
+        status = 409;
+        code = "function_conflict";
+    } else if (error.code == lua::RegistryErrorCode::schema_error ||
+               error.code == lua::RegistryErrorCode::script_error) {
+        code = "lua_script_error";
+    } else if (error.code == lua::RegistryErrorCode::limit_exceeded) {
+        code = "lua_limit_exceeded";
+    }
+    return std::unexpected(Problem{
+        .type = "/problems/" + code,
+        .title = "函数脚本未保存",
+        .status = status,
+        .code = std::move(code),
+        .detail = error.script.empty() ? error.message : error.script + ": " + error.message,
+        .fields = {},
+    });
+}
+
 }  // namespace
 
 JournalService::JournalService(
@@ -560,33 +611,38 @@ JournalService::restore_row(std::string_view row_id) const {
 std::vector<LuaFunctionView> JournalService::functions() const {
     std::vector<LuaFunctionView> result;
     for (const auto &function : functions_->list()) {
-        LuaFunctionView view{
-            .name = function.name,
-            .version = function.version,
-            .description = function.description,
-            .params = {},
-        };
-        for (const auto &parameter : function.params) {
-            view.params.push_back(LuaParameterView{
-                .name = parameter.name,
-                .type = parameter.type,
-                .label = parameter.label,
-                .required = parameter.required,
-                .options = parameter.options,
-            });
-        }
-        result.push_back(std::move(view));
+        result.push_back(lua_function_view(function));
     }
     return result;
+}
+
+ServiceResult<LuaFunctionView>
+JournalService::create_function(LuaFunctionInput input) const {
+    if (trimmed(input.source).empty()) {
+        return std::unexpected(problem(
+            422, "empty_lua_source", "函数脚本为空", "请填写 Lua 函数定义"));
+    }
+    auto result = functions_->create(std::move(input.source));
+    if (!result) return lua_failure<LuaFunctionView>(result.error());
+    return lua_function_view(*result);
+}
+
+ServiceResult<LuaFunctionView>
+JournalService::update_function(std::string_view name, LuaFunctionInput input) const {
+    if (trimmed(input.source).empty()) {
+        return std::unexpected(problem(
+            422, "empty_lua_source", "函数脚本为空", "请填写 Lua 函数定义"));
+    }
+    auto result = functions_->update(name, std::move(input.source));
+    if (!result) return lua_failure<LuaFunctionView>(result.error());
+    return lua_function_view(*result);
 }
 
 ServiceResult<lua::LuaValue>
 JournalService::invoke_function(std::string_view name, const lua::LuaValue::Object &input) const {
     auto result = functions_->invoke(name, input);
     if (!result) {
-        return std::unexpected(problem(result.error().code == lua::RegistryErrorCode::function_missing ? 404 : 422,
-                                       "lua_execution_error", "函数执行未完成",
-                                       result.error().message));
+        return lua_failure<lua::LuaValue>(result.error());
     }
     return *result;
 }

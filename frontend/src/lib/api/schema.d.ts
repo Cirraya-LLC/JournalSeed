@@ -253,11 +253,27 @@ export interface paths {
     };
     get: operations['listFunctions'];
     put?: never;
-    post?: never;
+    post: operations['createFunction'];
     delete?: never;
     options?: never;
     head?: never;
     patch?: never;
+    trace?: never;
+  };
+  '/functions/{name}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch: operations['updateFunction'];
     trace?: never;
   };
   '/functions/{name}/invoke': {
@@ -446,6 +462,8 @@ export interface components {
       name: string;
       version: string;
       description: string;
+      script: string;
+      source: string;
       params: {
         name: string;
         /** @enum {string} */
@@ -454,6 +472,10 @@ export interface components {
         required: boolean;
         options?: string[];
       }[];
+    };
+    LuaFunctionInput: {
+      /** @description Lua file content returning the function definition table. */
+      source: string;
     };
     Job: {
       /** Format: uuid */
@@ -1085,7 +1107,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Current atomically published Lua function registry. */
+      /** @description Current atomically published Lua function registry, including editable source. */
       200: {
         headers: {
           [name: string]: unknown;
@@ -1094,6 +1116,62 @@ export interface operations {
           'application/json': components['schemas']['LuaFunction'][];
         };
       };
+    };
+  };
+  createFunction: {
+    parameters: {
+      query?: never;
+      header: {
+        'X-JournalSeed-CSRF': components['parameters']['CsrfHeader'];
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['LuaFunctionInput'];
+      };
+    };
+    responses: {
+      /** @description Lua script saved and registry reloaded. */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['LuaFunction'];
+        };
+      };
+      409: components['responses']['Conflict'];
+    };
+  };
+  updateFunction: {
+    parameters: {
+      query?: never;
+      header: {
+        'X-JournalSeed-CSRF': components['parameters']['CsrfHeader'];
+      };
+      path: {
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['LuaFunctionInput'];
+      };
+    };
+    responses: {
+      /** @description Lua script updated and registry reloaded. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['LuaFunction'];
+        };
+      };
+      409: components['responses']['Conflict'];
     };
   };
   invokeFunction: {
