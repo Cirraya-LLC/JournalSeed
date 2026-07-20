@@ -1,7 +1,9 @@
 <script lang="ts">
   import {
+    BookOpenText,
     Braces,
     Check,
+    ChevronDown,
     Code2,
     LoaderCircle,
     PencilLine,
@@ -32,6 +34,7 @@
   let editorSource = '';
   let editorError = '';
   let savingFunction = false;
+  let tutorialOpen = true;
 
   $: selected = creatingFunction
     ? null
@@ -39,11 +42,16 @@
   $: if (!creatingFunction && !selectedName && functions.length > 0)
     selectedName = functions[0].name;
 
-  function functionTemplate(): string {
+  function uniqueFunctionName(base: string): string {
     const names = new Set(functions.map((item) => item.name));
     let index = 1;
-    let name = 'custom_function';
-    while (names.has(name)) name = `custom_function_${++index}`;
+    let name = base;
+    while (names.has(name)) name = `${base}_${++index}`;
+    return name;
+  }
+
+  function functionTemplate(): string {
+    const name = uniqueFunctionName('custom_function');
     return `return {
   name = "${name}",
   version = "1.0.0",
@@ -61,6 +69,43 @@
   end
 }
 `;
+  }
+
+  function tutorialTemplate(): string {
+    const name = uniqueFunctionName('tutorial_cashback');
+    return `return {
+  name = "${name}",
+  version = "1.0.0",
+  description = "教程示例：按比例计算返现，并返回可回填字段。",
+  params = {
+    { name = "amount", type = "number", label = "原始金额", required = true },
+    { name = "rate", type = "number", label = "返现比例", required = true },
+    { name = "memo", type = "text", label = "备注", required = false }
+  },
+  run = function(params)
+    local amount = dec(params.amount or "0")
+    local rate = dec(params.rate or "0")
+    local cashback = amount * rate
+    return {
+      amount = tostring(cashback),
+      description = params.memo or "返现",
+      note = "预览不会直接修改流水，确认后再手动回填。"
+    }
+  end
+}
+`;
+  }
+
+  function useTutorialExample(): void {
+    selectedName = '';
+    creatingFunction = true;
+    mode = 'edit';
+    editorTargetName = null;
+    editorSource = tutorialTemplate();
+    editorError = '';
+    error = '';
+    result = null;
+    tutorialOpen = true;
   }
 
   function choose(item: LuaFunction): void {
@@ -187,6 +232,60 @@
     </nav>
 
     <section class="runner">
+      <details class="tutorial-panel" bind:open={tutorialOpen}>
+        <summary>
+          <span class="tutorial-icon"><BookOpenText size={18} /></span>
+          <span class="tutorial-title">
+            <strong>自定义函数教程</strong>
+            <small>从模板到预览，照着 4 步写一个可保存的 Lua 函数</small>
+          </span>
+          <span class="tutorial-caret"><ChevronDown size={17} aria-hidden="true" /></span>
+        </summary>
+        <div class="tutorial-body">
+          <ol class="tutorial-steps" aria-label="自定义函数步骤">
+            <li>
+              <span class="step-index">1</span>
+              <span>
+                <strong>写元数据</strong>
+                <small>name 是函数唯一标识；version 和 description 会显示在列表与详情区。</small>
+              </span>
+            </li>
+            <li>
+              <span class="step-index">2</span>
+              <span>
+                <strong>定义 params</strong>
+                <small>参数会自动生成表单，type 支持 text、number、date、boolean、option。</small>
+              </span>
+            </li>
+            <li>
+              <span class="step-index">3</span>
+              <span>
+                <strong>用 dec 处理数字</strong>
+                <small>数字参数按字符串传入，金额或比例用 dec(params.amount) 做精确计算。</small>
+              </span>
+            </li>
+            <li>
+              <span class="step-index">4</span>
+              <span>
+                <strong>返回可预览结果</strong>
+                <small>run 返回 table；amount、description 和自定义字段会一起预览。</small>
+              </span>
+            </li>
+          </ol>
+          <div class="tutorial-notes">
+            <strong>保存规则</strong>
+            <ul>
+              <li>脚本必须 return 一个包含 run 的 table。</li>
+              <li>保存会校验整个函数目录；任一脚本出错都会保留上一份有效快照。</li>
+              <li>Lua 运行时关闭 os、io、package、debug、require、loadfile 等入口。</li>
+            </ul>
+            <button class="button" type="button" on:click={useTutorialExample}>
+              <Code2 size={16} />用教程示例新建
+            </button>
+          </div>
+        </div>
+      </details>
+
       {#if mode === 'edit'}
         <header class="runner-header editor-header">
           <div>
@@ -467,8 +566,171 @@
   }
 
   .runner {
+    display: grid;
+    align-content: start;
+    gap: 16px;
     min-width: 0;
     padding: 22px;
+  }
+
+  .tutorial-panel {
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--surface-subtle);
+  }
+
+  .tutorial-panel summary {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr) 18px;
+    align-items: center;
+    gap: 9px;
+    min-height: 48px;
+    padding: 8px 12px;
+    color: var(--ink);
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .tutorial-panel summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .tutorial-title {
+    display: grid;
+    min-width: 0;
+    gap: 1px;
+  }
+
+  .tutorial-panel summary strong {
+    color: var(--ink-strong);
+    font-size: 0.875rem;
+  }
+
+  .tutorial-panel summary small {
+    overflow: hidden;
+    color: var(--ink-muted);
+    font-size: 0.75rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tutorial-caret {
+    display: grid;
+    place-items: center;
+    color: var(--ink-muted);
+    transition: transform var(--duration-fast) var(--ease-out);
+  }
+
+  .tutorial-panel[open] .tutorial-caret {
+    transform: rotate(180deg);
+  }
+
+  .tutorial-icon {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    color: var(--accent-strong);
+    background: var(--surface-raised);
+  }
+
+  .tutorial-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(240px, 0.32fr);
+    gap: 16px;
+    padding: 0 12px 12px;
+    border-top: 1px solid var(--line);
+  }
+
+  .tutorial-steps {
+    display: grid;
+    gap: 0;
+    margin: 0;
+    padding-top: 12px;
+    padding-left: 0;
+    list-style: none;
+  }
+
+  .tutorial-steps li {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr);
+    gap: 9px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .tutorial-steps li:first-child {
+    padding-top: 0;
+  }
+
+  .tutorial-steps li:last-child {
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+
+  .tutorial-steps li > span:last-child {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+  }
+
+  .step-index {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    color: var(--accent-strong);
+    background: var(--surface-raised);
+    font-size: 0.75rem;
+    font-weight: 750;
+  }
+
+  .tutorial-steps strong,
+  .tutorial-notes > strong {
+    color: var(--ink-strong);
+    font-size: 0.8125rem;
+  }
+
+  .tutorial-steps small,
+  .tutorial-notes li {
+    color: var(--ink-muted);
+    font-size: 0.75rem;
+    line-height: 1.45;
+  }
+
+  .tutorial-notes {
+    display: grid;
+    gap: 4px;
+    align-content: start;
+    margin-top: 12px;
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface-raised);
+  }
+
+  .tutorial-notes ul {
+    display: grid;
+    gap: 3px;
+    margin: 0;
+    padding-left: 16px;
+  }
+
+  .tutorial-notes .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    justify-self: start;
+    min-height: var(--control-height-sm);
+    margin-top: 3px;
+    font-size: 0.8125rem;
   }
 
   .runner-header {
@@ -627,6 +889,11 @@
 
     .runner {
       padding: 20px 16px;
+    }
+
+    .tutorial-body,
+    .tutorial-steps {
+      grid-template-columns: 1fr;
     }
 
     .runner-header {

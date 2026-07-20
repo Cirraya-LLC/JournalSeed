@@ -199,6 +199,9 @@ The registry hot-reloads the directory by polling. Lua scripts can also be creat
 Functions page. Saving validates and reloads the full script set first; a new snapshot replaces the
 current registry only after all scripts validate successfully, and validation failures keep the previous
 valid snapshot active while rolling the file change back.
+The Functions page includes an in-product custom-function tutorial covering the
+`name`/`version`/`description`/`params`/`run` structure, exact-number handling with `dec()`,
+preview results, save validation, and a “use tutorial example” editable Lua template.
 
 ### Roadmap
 
