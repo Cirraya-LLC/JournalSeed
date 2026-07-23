@@ -6,7 +6,9 @@
 #include <drogon/orm/Exception.h>
 #include <glaze/glaze.hpp>
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -23,6 +25,46 @@ using drogon::orm::Row;
 std::optional<std::string> optional_string(const Row &row, const char *column) {
     if (row[column].isNull()) return std::nullopt;
     return row[column].as<std::string>();
+}
+
+std::string trim_copy(std::string value) {
+    const auto first = std::find_if_not(value.begin(), value.end(), [](unsigned char character) {
+        return std::isspace(character) != 0;
+    });
+    const auto last = std::find_if_not(value.rbegin(), value.rend(), [](unsigned char character) {
+                          return std::isspace(character) != 0;
+                      }).base();
+    if (first >= last) return {};
+    return std::string(first, last);
+}
+
+std::string bounded_text(std::string value, std::size_t maximum) {
+    value = trim_copy(std::move(value));
+    if (value.size() > maximum) value.resize(maximum);
+    return value;
+}
+
+[[maybe_unused]] std::optional<std::string> sanitized_optional(std::optional<std::string> value, std::size_t maximum) {
+    if (!value) return std::nullopt;
+    auto sanitized = bounded_text(std::move(*value), maximum);
+    if (sanitized.empty()) return std::nullopt;
+    return sanitized;
+}
+
+[[maybe_unused]] std::string sanitized_asset_symbol(std::string value) {
+    value = bounded_text(std::move(value), 24);
+    return value.empty() ? "UNKNOWN" : value;
+}
+
+[[maybe_unused]] std::string sanitized_asset_name(std::string value, std::string_view symbol) {
+    value = bounded_text(std::move(value), 120);
+    if (!value.empty()) return value;
+    auto fallback = bounded_text(std::string(symbol), 120);
+    return fallback.empty() ? "Unknown Asset" : fallback;
+}
+
+[[maybe_unused]] std::int16_t sanitized_asset_decimals(std::int16_t decimals) {
+    return std::clamp<std::int16_t>(decimals, 0, 18);
 }
 
 application::AccountView account_from_row(const Row &row) {
