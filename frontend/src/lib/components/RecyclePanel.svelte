@@ -24,6 +24,12 @@
     }
   }
 
+  function formatRowMoney(row: JournalRow): string {
+    const formatted = formatMoney(row.amount, row.assetDecimals);
+    const symbol = typeof row.assetSymbol === 'string' ? row.assetSymbol.trim() : '';
+    return symbol && symbol !== 'DEFAULT' ? `${formatted} ${symbol}` : formatted;
+  }
+
   async function restoreColumn(id: string): Promise<void> {
     busyId = id;
     error = '';
@@ -79,7 +85,7 @@
             class:expense={row.amount.startsWith('-')}
             class:income={!row.amount.startsWith('-')}
           >
-            {formatMoney(row.amount)}
+            {formatRowMoney(row)}
           </span>
           <button
             class="button"

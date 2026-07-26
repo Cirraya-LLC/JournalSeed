@@ -10,7 +10,17 @@
   } from 'lucide-svelte';
   import Drawer from './Drawer.svelte';
   import { errorMessage, normalizeMoneyInput, today } from '$lib/format';
-  import type { Account, Category, Column, JournalRow, RowInput, RowKind } from '$lib/types';
+  import type {
+    Account,
+    AddressLabelKind,
+    Category,
+    ChainCode,
+    ChainMovementDirection,
+    Column,
+    JournalRow,
+    RowInput,
+    RowKind
+  } from '$lib/types';
 
   export let row: JournalRow | null = null;
   export let accounts: Account[];
@@ -86,6 +96,50 @@
     } finally {
       recycling = false;
     }
+  }
+
+  function text(value: string | null | undefined): string {
+    return typeof value === 'string' ? value.trim() : '';
+  }
+
+  function joinParts(...parts: Array<string | null | undefined>): string {
+    return parts.map(text).filter(Boolean).join(' · ');
+  }
+
+  function directionLabel(
+    chainDirection: ChainMovementDirection | string | null | undefined
+  ): string {
+    const value = text(chainDirection);
+    if (value === 'incoming') return '收入';
+    if (value === 'outgoing') return '支出';
+    if (value === 'fee') return '手续费';
+    if (value === 'internal') return '内部转账';
+    // An unknown/blank direction must not masquerade as a real category.
+    return value ? `未知方向（${value}）` : '未知方向';
+  }
+
+  function kindLabel(addressKind: AddressLabelKind | null | undefined): string {
+    if (addressKind === 'customer') return '客户';
+    if (addressKind === 'self') return '自己';
+    if (addressKind === 'exchange') return '交易所';
+    if (addressKind === 'merchant') return '商户';
+    if (addressKind === 'contract') return '合约';
+    if (addressKind === 'other') return '其他';
+    return '未标记';
+  }
+
+  function chainLabel(
+    chain: ChainCode | string | null | undefined,
+    fallback?: string | null
+  ): string {
+    const named = text(fallback);
+    if (named) return named;
+    const code = text(chain);
+    if (code === 'tron-mainnet') return 'TRON Mainnet';
+    if (code === 'ethereum-mainnet') return 'Ethereum Mainnet';
+    if (code === 'polygon-mainnet') return 'Polygon Mainnet';
+    if (code === 'solana-mainnet') return 'Solana Mainnet';
+    return code || '未知链';
   }
 </script>
 
@@ -243,6 +297,60 @@
       </fieldset>
     {/if}
 
+    {#if row?.chainSource}
+      <section class="chain-source" aria-label="链上来源">
+        <header>
+          <span>链上来源</span>
+          <strong title={text(row.chainSource.txHash)}
+            >{text(row.chainSource.txHashShort) || text(row.chainSource.txHash) || '—'}</strong
+          >
+        </header>
+        <dl>
+          <div>
+            <dt>Tx Hash</dt>
+            <dd class="hash" title={text(row.chainSource.txHash)}>
+              {text(row.chainSource.txHash) || '—'}
+            </dd>
+          </div>
+          <div>
+            <dt>Chain</dt>
+            <dd>{chainLabel(row.chainSource.chain, row.chainSource.chainName)}</dd>
+          </div>
+          <div>
+            <dt>Asset</dt>
+            <dd>{text(row.chainSource.assetSymbol) || '—'}</dd>
+          </div>
+          <div>
+            <dt>Direction</dt>
+            <dd>{directionLabel(row.chainSource.direction)}</dd>
+          </div>
+        </dl>
+
+        <div class="chain-addresses">
+          <article>
+            <span>Origin</span>
+            <strong>{text(row.chainSource.origin?.displayName) || '未标记地址'}</strong>
+            <small
+              >{joinParts(
+                kindLabel(row.chainSource.origin?.kind),
+                text(row.chainSource.origin?.addressShort) || text(row.chainSource.origin?.address)
+              )}</small
+            >
+          </article>
+          <article>
+            <span>Target</span>
+            <strong>{text(row.chainSource.target?.displayName) || '未标记地址'}</strong>
+            <small
+              >{joinParts(
+                kindLabel(row.chainSource.target?.kind),
+                text(row.chainSource.target?.addressShort) || text(row.chainSource.target?.address)
+              )}</small
+            >
+          </article>
+        </div>
+      </section>
+    {/if}
+
     {#if error}<p class="field-error" role="alert">{error}</p>{/if}
 
     <footer class="form-actions">
@@ -392,6 +500,92 @@
     accent-color: var(--accent-strong);
   }
 
+  .chain-source {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface-subtle);
+  }
+
+  .chain-source header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .chain-source header span,
+  .chain-addresses article > span,
+  .chain-source dt {
+    color: var(--ink-muted);
+    font-size: 0.6875rem;
+    font-weight: 750;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .chain-source header strong,
+  .chain-source dd,
+  .chain-addresses strong {
+    min-width: 0;
+    color: var(--ink-strong);
+    font-size: 0.8125rem;
+  }
+
+  .chain-source dl {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+    margin: 0;
+  }
+
+  .chain-source dl > div,
+  .chain-addresses article {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+  }
+
+  .chain-source dt,
+  .chain-source dd {
+    margin: 0;
+  }
+
+  .hash,
+  .chain-source header strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .chain-addresses {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .chain-addresses article {
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface-raised);
+  }
+
+  .chain-addresses strong,
+  .chain-addresses small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chain-addresses small {
+    color: var(--ink-muted);
+    font-size: 0.75rem;
+  }
+
   .form-actions {
     display: flex;
     align-items: center;
@@ -422,7 +616,9 @@
 
   @media (max-width: 350px) {
     .primary-fields,
-    .account-grid {
+    .account-grid,
+    .chain-source dl,
+    .chain-addresses {
       grid-template-columns: 1fr;
     }
 

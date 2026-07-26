@@ -31,10 +31,13 @@ class Money final {
         return Money(value);
     }
 
+    [[nodiscard]] static constexpr std::uint8_t storage_scale() noexcept { return 18; }
+
     [[nodiscard]] constexpr rep minor_units() const noexcept { return minor_units_; }
     [[nodiscard]] constexpr bool is_zero() const noexcept { return minor_units_ == 0; }
     [[nodiscard]] constexpr bool is_positive() const noexcept { return minor_units_ > 0; }
     [[nodiscard]] constexpr bool is_negative() const noexcept { return minor_units_ < 0; }
+    [[nodiscard]] bool fits_scale(std::uint8_t decimals) const noexcept;
     [[nodiscard]] constexpr Money negated() const noexcept { return Money(-minor_units_); }
     [[nodiscard]] constexpr Money absolute() const noexcept {
         return minor_units_ < 0 ? Money(-minor_units_) : *this;

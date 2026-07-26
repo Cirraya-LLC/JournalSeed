@@ -1,6 +1,12 @@
 import type {
   Account,
+  AddressLabel,
+  AddressLabelInput,
+  AddressLabelPatch,
   Category,
+  ChainSettings,
+  ChainSettingsPatch,
+  ChainTransaction,
   Column,
   ColumnInput,
   Job,
@@ -13,6 +19,10 @@ import type {
   RowInput,
   RowPage,
   Session,
+  SyncResult,
+  Wallet,
+  WalletInput,
+  WalletPatch,
   SetupStatus
 } from '$lib/types';
 
@@ -227,6 +237,74 @@ class JournalSeedApi {
 
   jobs(): Promise<Job[]> {
     return this.request('/jobs');
+  }
+
+  chainSettings(): Promise<ChainSettings> {
+    return this.request('/chain-settings');
+  }
+
+  updateChainSettings(input: ChainSettingsPatch): Promise<ChainSettings> {
+    return this.request('/chain-settings', {
+      method: 'PATCH',
+      body: JSON.stringify(input)
+    });
+  }
+
+  wallets(ledgerId: string): Promise<Wallet[]> {
+    return this.request(`/ledgers/${ledgerId}/wallets`);
+  }
+
+  createWallet(ledgerId: string, input: WalletInput): Promise<Wallet> {
+    return this.request(`/ledgers/${ledgerId}/wallets`, {
+      method: 'POST',
+      body: JSON.stringify(input)
+    });
+  }
+
+  updateWallet(walletId: string, input: WalletPatch): Promise<Wallet> {
+    return this.request(`/wallets/${walletId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input)
+    });
+  }
+
+  deleteWallet(walletId: string): Promise<void> {
+    return this.request(`/wallets/${walletId}`, { method: 'DELETE' });
+  }
+
+  syncWallet(walletId: string): Promise<SyncResult> {
+    return this.request(`/wallets/${walletId}/sync`, { method: 'POST' });
+  }
+
+  chainTransactions(
+    ledgerId: string,
+    options: { limit?: number } = {}
+  ): Promise<ChainTransaction[]> {
+    const query = new URLSearchParams();
+    query.set('limit', String(options.limit ?? 100));
+    return this.request(`/ledgers/${ledgerId}/chain-transactions?${query}`);
+  }
+
+  addressLabels(ledgerId: string): Promise<AddressLabel[]> {
+    return this.request(`/ledgers/${ledgerId}/address-labels`);
+  }
+
+  createAddressLabel(ledgerId: string, input: AddressLabelInput): Promise<AddressLabel> {
+    return this.request(`/ledgers/${ledgerId}/address-labels`, {
+      method: 'POST',
+      body: JSON.stringify(input)
+    });
+  }
+
+  updateAddressLabel(labelId: string, input: AddressLabelPatch): Promise<AddressLabel> {
+    return this.request(`/address-labels/${labelId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input)
+    });
+  }
+
+  deleteAddressLabel(labelId: string): Promise<void> {
+    return this.request(`/address-labels/${labelId}`, { method: 'DELETE' });
   }
 }
 

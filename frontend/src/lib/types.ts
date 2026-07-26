@@ -1,6 +1,16 @@
+/**
+ * Exact decimal string; never a JavaScript number.
+ *
+ * The server renders every amount at the scale of its own asset — `DEFAULT` 2, TRX/USDT 6,
+ * SOL 9, ETH/POL 18 — so the decimal places are always exactly the `assetDecimals` (or
+ * `AssetSummary.decimals`) shipped alongside the value. On input, more decimal places than
+ * the asset allows is rejected with a 422 carrying `fields.amount`, never rounded to fit.
+ */
 export type Money = string;
 export type Direction = 'income' | 'expense';
 export type RowKind = 'entry' | 'transfer' | 'note';
+/** `money` is response-only: the server emits it for the system amount column, but
+ *  `ColumnInput.type` cannot request it. */
 export type ColumnType =
   'text' | 'number' | 'date' | 'boolean' | 'option' | 'relation' | 'formula' | 'money';
 
@@ -20,11 +30,33 @@ export interface Ledger {
   createdAt: string;
 }
 
+/**
+ * `balance` / `income` / `expense` describe the ledger's DEFAULT ASSET ONLY, at that asset's
+ * scale — they are not ledger-wide totals, because amounts in different assets cannot be
+ * added. Every asset, default first, is in `assetSummaries`. `rowCount` stays ledger-wide.
+ *
+ * `income`, `expense` and `rowCount` are flows bounded by both `from` and `to`; `balance` is
+ * a stock and is the closing balance as of `to`, unaffected by `from`. `expense` is a signed
+ * total and is therefore negative or zero.
+ */
 export interface LedgerSummary {
   balance: Money;
   income: Money;
   expense: Money;
   rowCount: number;
+  assetSummaries: AssetSummary[];
+}
+
+/** One asset's balance and period flows, rendered at that asset's own `decimals`. Values
+ *  from different assets must never be summed. */
+export interface AssetSummary {
+  assetId: string;
+  symbol: string;
+  name: string;
+  decimals: number;
+  balance: Money;
+  income: Money;
+  expense: Money;
 }
 
 export interface Account {
@@ -33,6 +65,9 @@ export interface Account {
   openingBalance: Money;
   balance: Money;
   archived: boolean;
+  assetId: string;
+  assetSymbol: string;
+  assetDecimals: number;
 }
 
 export interface Category {
@@ -43,6 +78,133 @@ export interface Category {
 }
 
 export type CellValue = string | boolean | null;
+export type ChainCode = 'tron-mainnet' | 'ethereum-mainnet' | 'polygon-mainnet' | 'solana-mainnet';
+export type ChainMovementDirection = 'incoming' | 'outgoing' | 'internal' | 'fee';
+export type AddressLabelKind = 'customer' | 'self' | 'exchange' | 'merchant' | 'contract' | 'other';
+export type WalletSyncStatus = 'idle' | 'running' | 'failed';
+
+export interface ChainSettings {
+  tronGridApiKeyConfigured: boolean;
+  etherscanApiKeyConfigured: boolean;
+  syncIntervalMinutes: number;
+  tronGridEndpoint: string;
+  ethereumRpcUrlConfigured: boolean;
+  ethereumRpcEndpoint: string;
+  polygonRpcUrlConfigured: boolean;
+  polygonRpcEndpoint: string;
+  solanaRpcUrlConfigured: boolean;
+  solanaRpcEndpoint: string;
+}
+
+export interface ChainSettingsPatch {
+  tronGridApiKey?: string;
+  clearTronGridApiKey?: boolean;
+  etherscanApiKey?: string;
+  clearEtherscanApiKey?: boolean;
+  ethereumRpcUrl?: string;
+  clearEthereumRpcUrl?: boolean;
+  polygonRpcUrl?: string;
+  clearPolygonRpcUrl?: boolean;
+  solanaRpcUrl?: string;
+  clearSolanaRpcUrl?: boolean;
+  syncIntervalMinutes?: number;
+}
+
+export interface WalletInput {
+  chain: ChainCode;
+  name: string;
+  address: string;
+  enabled: boolean;
+  autoSync: boolean;
+}
+
+export interface WalletPatch {
+  name?: string;
+  enabled?: boolean;
+  autoSync?: boolean;
+}
+
+export interface Wallet {
+  id: string;
+  ledgerId: string;
+  chain: ChainCode;
+  chainName: string;
+  name: string;
+  address: string;
+  addressShort: string;
+  enabled: boolean;
+  autoSync: boolean;
+  lastSyncedAt: string | null;
+  lastError: string | null;
+  syncStatus: WalletSyncStatus;
+  createdAt: string | null;
+}
+
+export interface AddressLabelInput {
+  chain: ChainCode;
+  address: string;
+  displayName: string;
+  kind: AddressLabelKind;
+  note: string;
+}
+
+export interface AddressLabelPatch {
+  displayName?: string;
+  kind?: AddressLabelKind;
+  note?: string;
+}
+
+export interface AddressLabel {
+  id: string;
+  ledgerId: string;
+  chain: ChainCode;
+  chainName: string;
+  scope: 'chain' | 'evm';
+  address: string;
+  addressShort: string;
+  displayName: string;
+  kind: AddressLabelKind;
+  note: string;
+  updatedAt: string;
+}
+
+export interface ChainAddress {
+  address: string;
+  addressShort: string;
+  labelId: string | null;
+  displayName: string | null;
+  kind: AddressLabelKind | null;
+}
+
+export interface ChainSource {
+  txHash: string;
+  txHashShort: string;
+  chain: ChainCode;
+  chainName?: string;
+  direction: ChainMovementDirection;
+  assetSymbol: string;
+  assetDecimals: number;
+  origin: ChainAddress;
+  target: ChainAddress;
+}
+
+export interface ChainTransaction {
+  id: string;
+  txHash: string;
+  txHashShort: string;
+  blockTimestamp: string | null;
+  chain: ChainCode;
+  chainName?: string;
+  assetId: string;
+  assetSymbol: string;
+  assetDecimals: number;
+  direction: ChainMovementDirection;
+  amount: Money;
+  origin: ChainAddress;
+  target: ChainAddress;
+  rowId: string | null;
+  rowDescription: string | null;
+}
 
 export interface JournalRow {
   id: string;
@@ -50,6 +212,9 @@ export interface JournalRow {
   description: string;
   kind: RowKind;
   amount: Money;
+  assetId: string;
+  assetSymbol: string;
+  assetDecimals: number;
   accountId: string | null;
   accountName?: string | null;
   categoryId: string | null;
@@ -60,6 +225,9 @@ export interface JournalRow {
   revision: number;
   createdAt: string;
   updatedAt: string;
+  /** Present on rows created by wallet sync, absent on ordinary manual rows — so its
+   *  presence is a reliable test for "this row came from a chain movement". */
+  chainSource?: ChainSource | null;
 }
 
 export interface RowInput {
@@ -134,10 +302,17 @@ export interface ProblemDetails {
 
 export interface Job {
   id: string;
-  kind: 'formula_recalc' | 'csv_import' | 'csv_export';
+  kind: 'formula_recalc' | 'csv_import' | 'csv_export' | 'wallet_backfill' | 'wallet_sync';
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   done: number;
   total: number;
   error: Record<string, unknown> | null;
   createdAt: string;
+}
+
+export interface SyncResult {
+  job: Job;
+  transactionsSeen: number;
+  movementsCreated: number;
+  rowsCreated: number;
 }

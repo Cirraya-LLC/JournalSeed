@@ -35,6 +35,12 @@
     }
   }
 
+  function formatAccountMoney(value: string, account: Account): string {
+    const formatted = formatMoney(value, account.assetDecimals);
+    const symbol = typeof account.assetSymbol === 'string' ? account.assetSymbol.trim() : '';
+    return symbol && symbol !== 'DEFAULT' ? `${formatted} ${symbol}` : formatted;
+  }
+
   async function createCategory(): Promise<void> {
     categoryError = '';
     if (!categoryName.trim()) {
@@ -104,12 +110,12 @@
         {#each accounts as account}
           <div class="list-row">
             <strong>{account.name}</strong>
-            <span>{formatMoney(account.openingBalance)}</span>
+            <span>{formatAccountMoney(account.openingBalance, account)}</span>
             <span
               class:positive={!account.balance.startsWith('-')}
               class:negative={account.balance.startsWith('-')}
             >
-              {formatMoney(account.balance)}
+              {formatAccountMoney(account.balance, account)}
             </span>
           </div>
         {:else}

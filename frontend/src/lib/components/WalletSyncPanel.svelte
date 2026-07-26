@@ -129,50 +129,75 @@
     return labelKinds.find((item) => item.value === kind)?.label ?? '未标记';
   }
 
+  function text(value: string | null | undefined): string {
+    return typeof value === 'string' ? value.trim() : '';
+  }
+
+  function joinParts(...parts: Array<string | null | undefined>): string {
+    return parts.map(text).filter(Boolean).join(' · ');
+  }
+
   function chainLabel(
     chain: ChainCode | string | null | undefined,
     fallback?: string | null
   ): string {
+    const code = text(chain);
     return (
-      fallback || chainOptions.find((item) => item.value === chain)?.label || chain || '未知链'
+      text(fallback) || chainOptions.find((item) => item.value === code)?.label || code || '未知链'
     );
   }
 
   function isEvmChain(chain: ChainCode | string | null | undefined): boolean {
-    return chain === 'ethereum-mainnet' || chain === 'polygon-mainnet';
+    const code = text(chain);
+    return code === 'ethereum-mainnet' || code === 'polygon-mainnet' || code === 'evm';
+  }
+
+  // A label is EVM-shared when the backend says so via scope, or when it only
+  // carries the shared `evm` chain code (scope may arrive empty).
+  function isEvmScopedLabel(label: AddressLabel): boolean {
+    return text(label.scope) === 'evm' || text(label.chain) === 'evm' || isEvmChain(label.chain);
   }
 
   function labelScopeText(chain: ChainCode, label: AddressLabel | null = activeLabel): string {
-    if (label?.scope === 'evm' || isEvmChain(chain)) return 'Ethereum/Polygon 共享标签';
+    if ((label && isEvmScopedLabel(label)) || isEvmChain(chain)) return 'Ethereum/Polygon 共享标签';
     return `${chainLabel(chain, label?.chainName)} 专属标签`;
   }
 
-  function directionLabel(direction: ChainTransaction['direction']): string {
-    if (direction === 'incoming') return '收入';
-    if (direction === 'outgoing') return '支出';
-    if (direction === 'fee') return '手续费';
-    return '内部转账';
+  function directionLabel(
+    direction: ChainTransaction['direction'] | string | null | undefined
+  ): string {
+    const value = text(direction);
+    if (value === 'incoming') return '收入';
+    if (value === 'outgoing') return '支出';
+    if (value === 'fee') return '手续费';
+    if (value === 'internal') return '内部转账';
+    // Never fall through to a real category: an unknown direction must look unknown.
+    return value ? `未知方向（${value}）` : '未知方向';
   }
 
   function addressText(transaction: ChainTransaction, side: 'origin' | 'target'): string {
     const address = side === 'origin' ? transaction.origin : transaction.target;
-    return address.displayName || address.addressShort || address.address || '—';
+    if (!address) return '—';
+    return text(address.displayName) || text(address.addressShort) || text(address.address) || '—';
   }
 
-  function labelFor(address: string, chain: ChainCode): AddressLabel | null {
+  function labelFor(address: string, chain: ChainCode | string): AddressLabel | null {
+    const wanted = text(address);
+    if (!wanted) return null;
+    const code = text(chain);
     return (
       labels.find(
         (label) =>
-          label.address === address &&
-          (label.chain === chain || (isEvmChain(chain) && label.scope === 'evm'))
+          text(label.address) === wanted &&
+          (text(label.chain) === code || (isEvmChain(code) && isEvmScopedLabel(label)))
       ) ?? null
     );
   }
 
   function openLabel(address: string, chain: ChainCode): void {
-    if (!address) return;
+    if (!text(address)) return;
     activeChain = chain;
-    activeAddress = address;
+    activeAddress = text(address);
     activeLabel = labelFor(address, chain);
     labelName = activeLabel?.displayName ?? '';
     labelKind = activeLabel?.kind ?? 'customer';
@@ -305,6 +330,10 @@
           note: labelNote.trim()
         });
       } else {
+        if (!activeAddress) {
+          labelError = '缺少地址，无法创建标记';
+          return;
+        }
         await onCreateLabel({
           chain: activeChain,
           address: activeAddress,
@@ -410,10 +439,17 @@
             <article class="wallet-card" class:disabled={!wallet.enabled}>
               <div class="wallet-main">
                 <strong>{wallet.name}</strong>
-                <span>{chainLabel(wallet.chain, wallet.chainName)} · {wallet.addressShort}</span>
+                <span
+                  >{joinParts(
+                    chainLabel(wallet.chain, wallet.chainName),
+                    text(wallet.addressShort) || text(wallet.address)
+                  )}</span
+                >
               </div>
               <div class="wallet-state">
-                <span class:running={wallet.syncStatus === 'running'}>{wallet.syncStatus}</span>
+                <span class:running={wallet.syncStatus === 'running'}
+                  >{text(wallet.syncStatus) || 'idle'}</span
+                >
                 {#if wallet.lastSyncedAt}<small
                     >{new Date(wallet.lastSyncedAt).toLocaleString('zh-CN')}</small
                   >{:else}<small>尚未同步</small>{/if}
@@ -603,13 +639,13 @@
                   : '—'}</td
               >
               <td>{chainLabel(transaction.chain, transaction.chainName)}</td>
-              <td><strong>{transaction.assetSymbol}</strong></td>
+              <td><strong>{text(transaction.assetSymbol) || '—'}</strong></td>
               <td><span class="direction-chip">{directionLabel(transaction.direction)}</span></td>
               <td class="amount-cell"
                 >{formatMoney(transaction.amount, transaction.assetDecimals)}</td
               >
               <td>
-                {#if transaction.origin.address}
+                {#if text(transaction.origin?.address)}
                   <button
                     class="address-button"
                     type="button"
@@ -622,7 +658,7 @@
                 {:else}<span class="empty-value">—</span>{/if}
               </td>
               <td>
-                {#if transaction.target.address}
+                {#if text(transaction.target?.address)}
                   <button
                     class="address-button"
                     type="button"
@@ -634,8 +670,12 @@
                   </button>
                 {:else}<span class="empty-value">—</span>{/if}
               </td>
-              <td><span class="hash">{transaction.txHashShort}</span></td>
-              <td>{transaction.rowDescription ?? '—'}</td>
+              <td
+                ><span class="hash" title={text(transaction.txHash)}
+                  >{text(transaction.txHashShort) || text(transaction.txHash) || '—'}</span
+                ></td
+              >
+              <td>{text(transaction.rowDescription) || '—'}</td>
             </tr>
           {:else}
             <tr><td colspan="9"><div class="table-empty">同步后链上交易会显示在这里。</div></td></tr
@@ -650,7 +690,7 @@
 {#if labelDrawerOpen}
   <Drawer
     title={activeLabel ? '修改地址标记' : '标记地址'}
-    eyebrow={`${chainLabel(activeChain, activeLabel?.chainName)} · ${activeAddress}`}
+    eyebrow={joinParts(chainLabel(activeChain, activeLabel?.chainName), activeAddress)}
     onClose={() => (labelDrawerOpen = false)}
   >
     <form class="label-form" on:submit|preventDefault={saveLabel}>

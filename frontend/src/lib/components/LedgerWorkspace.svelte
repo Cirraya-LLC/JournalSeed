@@ -17,6 +17,7 @@
     Search,
     Sprout,
     Trash2,
+    WalletCards,
     X
   } from 'lucide-svelte';
   import AccountsPanel from './AccountsPanel.svelte';
@@ -26,11 +27,18 @@
   import RecyclePanel from './RecyclePanel.svelte';
   import ToastRegion from './ToastRegion.svelte';
   import TransactionTable from './TransactionTable.svelte';
+  import WalletSyncPanel from './WalletSyncPanel.svelte';
   import { api } from '$lib/api/client';
   import { errorMessage, formatMoney } from '$lib/format';
   import type {
     Account,
+    AddressLabel,
+    AddressLabelInput,
+    AddressLabelPatch,
     Category,
+    ChainSettings,
+    ChainSettingsPatch,
+    ChainTransaction,
     Column,
     ColumnInput,
     JournalRow,
@@ -38,17 +46,21 @@
     LedgerSummary,
     LuaFunction,
     RowInput,
-    Session
+    Session,
+    Wallet,
+    WalletInput,
+    WalletPatch
   } from '$lib/types';
   import type { Toast } from './ToastRegion.svelte';
 
-  type View = 'transactions' | 'accounts' | 'columns' | 'functions' | 'recycle';
+  type View = 'transactions' | 'wallets' | 'accounts' | 'columns' | 'functions' | 'recycle';
 
   export let session: Session;
   export let onLoggedOut: () => void;
 
   const navigation: Array<{ id: View; label: string; icon: typeof FileText }> = [
     { id: 'transactions', label: '流水', icon: FileText },
+    { id: 'wallets', label: '钱包同步', icon: WalletCards },
     { id: 'accounts', label: '账户分类', icon: Landmark },
     { id: 'columns', label: '列设置', icon: Columns3 },
     { id: 'functions', label: '函数', icon: Braces },
@@ -58,7 +70,13 @@
   let view: View = 'transactions';
   let ledgers: Ledger[] = [];
   let selectedLedgerId = '';
-  let summary: LedgerSummary = { balance: '0.00', income: '0.00', expense: '0.00', rowCount: 0 };
+  let summary: LedgerSummary = {
+    balance: '0.00',
+    income: '0.00',
+    expense: '0.00',
+    rowCount: 0,
+    assetSummaries: []
+  };
   let accounts: Account[] = [];
   let categories: Category[] = [];
   let columns: Column[] = [];
@@ -66,6 +84,10 @@
   let recycledRows: JournalRow[] = [];
   let recycledColumns: Column[] = [];
   let functions: LuaFunction[] = [];
+  let chainSettings: ChainSettings | null = null;
+  let wallets: Wallet[] = [];
+  let addressLabels: AddressLabel[] = [];
+  let chainTransactions: ChainTransaction[] = [];
   let nextCursor: string | null = null;
   let hasMore = false;
   let loading = true;
@@ -93,12 +115,23 @@
           row.categoryName,
           row.transferAccountName,
           row.amount,
-          row.date
+          row.date,
+          row.assetSymbol,
+          row.chainSource?.txHash,
+          row.chainSource?.origin?.displayName,
+          row.chainSource?.target?.displayName
         ]
           .filter(Boolean)
           .some((value) => String(value).toLocaleLowerCase('zh-CN').includes(normalizedSearch))
       )
     : rows;
+  $: chainAssetSummaries = (summary.assetSummaries ?? []).filter(
+    (asset) => asset.symbol !== 'DEFAULT'
+  );
+
+  function isNegativeMoney(value: string | null | undefined): boolean {
+    return typeof value === 'string' && value.trim().startsWith('-');
+  }
 
   function notify(tone: Toast['tone'], message: string): void {
     const id = ++toastCounter;
@@ -144,7 +177,11 @@
         columnResult,
         rowResult,
         recycledRowResult,
-        recycledColumnResult
+        recycledColumnResult,
+        settingsResult,
+        walletResult,
+        labelResult,
+        chainTransactionResult
       ] = await Promise.all([
         api.summary(selectedLedgerId),
         api.accounts(selectedLedgerId),
@@ -152,7 +189,11 @@
         api.columns(selectedLedgerId),
         api.rows(selectedLedgerId, { sort }),
         api.rows(selectedLedgerId, { recycled: true, limit: 100 }),
-        api.columns(selectedLedgerId, true)
+        api.columns(selectedLedgerId, true),
+        api.chainSettings(),
+        api.wallets(selectedLedgerId),
+        api.addressLabels(selectedLedgerId),
+        api.chainTransactions(selectedLedgerId, { limit: 100 })
       ]);
       summary = summaryResult;
       accounts = accountResult;
@@ -163,6 +204,10 @@
       hasMore = rowResult.hasMore;
       recycledRows = recycledRowResult.items;
       recycledColumns = recycledColumnResult;
+      chainSettings = settingsResult;
+      wallets = walletResult;
+      addressLabels = labelResult;
+      chainTransactions = chainTransactionResult;
     } catch (reason) {
       notify('error', errorMessage(reason));
     } finally {
@@ -275,6 +320,53 @@
     await loadLedger();
   }
 
+  async function createWallet(input: WalletInput): Promise<void> {
+    await api.createWallet(selectedLedgerId, input);
+    notify('success', `钱包“${input.name}”已添加`);
+    await loadLedger();
+  }
+
+  async function updateWallet(id: string, patch: WalletPatch): Promise<void> {
+    await api.updateWallet(id, patch);
+    notify('success', '钱包设置已保存');
+    await loadLedger();
+  }
+
+  async function deleteWallet(id: string): Promise<void> {
+    await api.deleteWallet(id);
+    notify('success', '钱包已删除，同步流水已保留');
+    await loadLedger();
+  }
+
+  async function syncWallet(id: string): Promise<void> {
+    const result = await api.syncWallet(id);
+    notify('success', `同步完成：新增 ${result.rowsCreated} 条流水`);
+    await loadLedger();
+  }
+
+  async function saveChainSettings(patch: ChainSettingsPatch): Promise<void> {
+    chainSettings = await api.updateChainSettings(patch);
+    notify('success', '链同步设置已保存');
+  }
+
+  async function createAddressLabel(input: AddressLabelInput): Promise<void> {
+    await api.createAddressLabel(selectedLedgerId, input);
+    notify('success', `地址“${input.displayName}”已标记`);
+    await loadLedger();
+  }
+
+  async function updateAddressLabel(id: string, patch: AddressLabelPatch): Promise<void> {
+    await api.updateAddressLabel(id, patch);
+    notify('success', '地址标记已更新');
+    await loadLedger();
+  }
+
+  async function deleteAddressLabel(id: string): Promise<void> {
+    await api.deleteAddressLabel(id);
+    notify('success', '地址标记已清除');
+    await loadLedger();
+  }
+
   async function createFunction(source: string): Promise<LuaFunction> {
     const saved = await api.createFunction({ source });
     functions = await api.functions();
@@ -330,6 +422,9 @@
       }
     });
     eventSource.addEventListener('job.completed', () => loadLedger());
+    eventSource.addEventListener('wallet.sync.completed', () => loadLedger());
+    eventSource.addEventListener('wallet.sync.failed', () => loadLedger());
+    eventSource.addEventListener('wallet.address_label.updated', () => loadLedger());
     eventSource.onerror = () => {
       if (!pollTimer) {
         pollTimer = setInterval(async () => {
@@ -464,7 +559,7 @@
           <div class="summary-strip">
             <div class="summary-balance">
               <span>账户总余额</span>
-              <strong class:negative={summary.balance.startsWith('-')}
+              <strong class:negative={isNegativeMoney(summary.balance)}
                 >{formatMoney(summary.balance)}</strong
               >
             </div>
@@ -478,9 +573,28 @@
             </div>
             <div>
               <span>流水数量</span>
-              <strong>{summary.rowCount.toLocaleString('zh-CN')}</strong>
+              <strong>{(summary.rowCount ?? 0).toLocaleString('zh-CN')}</strong>
             </div>
           </div>
+
+          {#if chainAssetSummaries.length > 0}
+            <div class="asset-summary-strip" aria-label="链上资产汇总">
+              {#each chainAssetSummaries as asset}
+                <div>
+                  <span>{asset.symbol}</span>
+                  <strong class:negative={isNegativeMoney(asset.balance)}
+                    >{formatMoney(asset.balance, asset.decimals)}</strong
+                  >
+                  <small
+                    >收入 {formatMoney(asset.income, asset.decimals)} · 支出 {formatMoney(
+                      asset.expense,
+                      asset.decimals
+                    )}</small
+                  >
+                </div>
+              {/each}
+            </div>
+          {/if}
 
           <div class="table-toolbar">
             <div class="search-box">
@@ -528,6 +642,22 @@
             </div>
           {/if}
         </section>
+      {:else if view === 'wallets'}
+        <WalletSyncPanel
+          settings={chainSettings}
+          {wallets}
+          transactions={chainTransactions}
+          labels={addressLabels}
+          {loading}
+          onCreateWallet={createWallet}
+          onUpdateWallet={updateWallet}
+          onDeleteWallet={deleteWallet}
+          onSyncWallet={syncWallet}
+          onSaveSettings={saveChainSettings}
+          onCreateLabel={createAddressLabel}
+          onUpdateLabel={updateAddressLabel}
+          onDeleteLabel={deleteAddressLabel}
+        />
       {:else if view === 'accounts'}
         <AccountsPanel
           {accounts}
@@ -947,6 +1077,41 @@
     color: var(--expense);
   }
 
+  .asset-summary-strip {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-raised);
+  }
+
+  .asset-summary-strip > div {
+    display: grid;
+    min-width: 160px;
+    gap: 1px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface-subtle);
+  }
+
+  .asset-summary-strip span,
+  .asset-summary-strip small {
+    color: var(--ink-muted);
+    font-size: 0.6875rem;
+  }
+
+  .asset-summary-strip strong {
+    color: var(--ink-strong);
+    font-size: 0.9375rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .asset-summary-strip strong.negative {
+    color: var(--expense);
+  }
+
   .table-toolbar {
     display: flex;
     align-items: center;
@@ -1158,7 +1323,7 @@
       left: 0;
       display: grid;
       height: calc(58px + env(safe-area-inset-bottom));
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(6, minmax(0, 1fr));
       padding: 4px 4px env(safe-area-inset-bottom);
       border-top: 1px solid var(--line);
       background: var(--surface-raised);
@@ -1214,6 +1379,41 @@
 
     .summary-strip .summary-balance strong {
       font-size: 1.25rem;
+    }
+
+    .asset-summary-strip {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-raised);
+    }
+
+    .asset-summary-strip > div {
+      display: grid;
+      min-width: 160px;
+      gap: 1px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      background: var(--surface-subtle);
+    }
+
+    .asset-summary-strip span,
+    .asset-summary-strip small {
+      color: var(--ink-muted);
+      font-size: 0.6875rem;
+    }
+
+    .asset-summary-strip strong {
+      color: var(--ink-strong);
+      font-size: 0.9375rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .asset-summary-strip strong.negative {
+      color: var(--expense);
     }
 
     .table-toolbar {

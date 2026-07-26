@@ -1,12 +1,16 @@
+find_package(libsodium CONFIG REQUIRED)
+
 add_library(journalseed_core STATIC
   src/config/app_config.cpp
   src/domain/money.cpp
   src/domain/journal_entry.cpp
+  src/domain/tron.cpp
+  src/domain/chain.cpp
   src/application/formula_graph.cpp
 )
 
 target_include_directories(journalseed_core PUBLIC include)
-target_link_libraries(journalseed_core PUBLIC glaze::glaze)
+target_link_libraries(journalseed_core PUBLIC glaze::glaze libsodium::libsodium)
 target_compile_features(journalseed_core PUBLIC cxx_std_23)
 journalseed_set_warnings(journalseed_core)
 journalseed_enable_sanitizers(journalseed_core)
@@ -23,7 +27,6 @@ journalseed_enable_sanitizers(journalseed_lua)
 
 if(JOURNALSEED_BUILD_SERVER)
   find_package(Drogon CONFIG REQUIRED)
-  find_package(libsodium CONFIG REQUIRED)
   find_package(PostgreSQL CONFIG REQUIRED)
   find_path(JOURNALSEED_LIBPQ_INCLUDE_DIR libpq-fe.h
     HINTS
@@ -41,6 +44,9 @@ if(JOURNALSEED_BUILD_SERVER)
     src/application/journal_service.cpp
     src/infrastructure/migration_runner.cpp
     src/infrastructure/postgres_repository.cpp
+    src/infrastructure/tron_adapter.cpp
+    src/infrastructure/evm_adapter.cpp
+    src/infrastructure/solana_adapter.cpp
   )
   target_link_libraries(journalseed PRIVATE
     journalseed_core
