@@ -18,9 +18,10 @@ CREATE TABLE chain_networks (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
+-- chain_networks was created empty two statements ago, so this seed cannot conflict;
+-- a unique violation here would be a real bug and must surface, not be swallowed.
 INSERT INTO chain_networks(code, name, chain_type, native_asset_symbol, native_decimals, explorer_tx_url)
-VALUES ('tron-mainnet', 'TRON Mainnet', 'tron', 'TRX', 6, 'https://tronscan.org/#/transaction/{txHash}')
-ON CONFLICT (code) DO NOTHING;
+VALUES ('tron-mainnet', 'TRON Mainnet', 'tron', 'TRX', 6, 'https://tronscan.org/#/transaction/{txHash}');
 
 CREATE TABLE assets (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -48,9 +49,12 @@ CREATE UNIQUE INDEX assets_chain_identifier_unique
     WHERE chain_network_id IS NOT NULL;
 CREATE INDEX assets_ledger_symbol ON assets (ledger_id, lower(symbol), id);
 
+-- assets was created empty above and ledgers.id is unique, so exactly one default asset
+-- per ledger is inserted and no conflict is possible. A bare ON CONFLICT DO NOTHING here
+-- would silently skip rows and only resurface as an opaque
+-- "column asset_id contains null values" at the SET NOT NULL statements below.
 INSERT INTO assets(ledger_id, symbol, name, decimals, is_default)
-SELECT id, 'DEFAULT', '默认本位资产', 2, TRUE FROM ledgers
-ON CONFLICT DO NOTHING;
+SELECT id, 'DEFAULT', '默认本位资产', 2, TRUE FROM ledgers;
 
 ALTER TABLE accounts ADD COLUMN asset_id BIGINT;
 UPDATE accounts a
@@ -79,6 +83,11 @@ UPDATE postings p
    SET asset_id = r.asset_id
   FROM journal_rows r
  WHERE r.id = p.row_id;
+-- The UPDATE above queues one event per row on postings_balance_guard, a DEFERRABLE
+-- INITIALLY DEFERRED constraint trigger (0001). Pending events make CheckTableNotInUse
+-- reject the SET NOT NULL below, so drain them first (same idiom as
+-- PostgresRepository::update_row in backend/src/infrastructure/postgres_repository.cpp).
+SET CONSTRAINTS postings_balance_guard IMMEDIATE;
 ALTER TABLE postings ALTER COLUMN asset_id SET NOT NULL;
 ALTER TABLE postings ADD CONSTRAINT postings_asset_fk FOREIGN KEY (asset_id) REFERENCES assets(id);
 CREATE INDEX postings_asset_balance ON postings (account_id, asset_id, row_id) INCLUDE (signed_amount);

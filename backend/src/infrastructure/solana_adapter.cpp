@@ -7,8 +7,12 @@
 #include <drogon/HttpRequest.h>
 #include <drogon/HttpResponse.h>
 #include <glaze/glaze.hpp>
+#include <trantor/utils/Logger.h>
 
 #include <algorithm>
+#include <charconv>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <map>
@@ -43,6 +47,28 @@ struct SolanaTransactionNumberRoot {
 };
 
 namespace {
+
+// 第三方响应先被解析成 glz::generic DOM、再逐条重新序列化进 rawJson，内存放大数倍，
+// 因此在解析之前先按字节数封顶；对当前的 limit 上限来说 8 MiB 已经非常宽裕。
+constexpr std::size_t kMaxResponseBytes = 8U * 1024U * 1024U;
+
+// Content-Length 由上游控制，只在"明确声明超限"时提前拒绝；缺失或分块编码一律不可信，
+// 最终以实际读到的字节数为准。
+void reject_oversized_response(const drogon::HttpResponsePtr &response) {
+    const auto declared = response->getHeader("content-length");
+    if (!declared.empty()) {
+        std::uint64_t length = 0;
+        const auto *begin = declared.data();
+        const auto *end = begin + declared.size();
+        const auto [ptr, ec] = std::from_chars(begin, end, length);
+        if (ec == std::errc{} && ptr == end && length > kMaxResponseBytes) {
+            throw std::runtime_error("Solana RPC 响应超出大小上限");
+        }
+    }
+    if (response->body().size() > kMaxResponseBytes) {
+        throw std::runtime_error("Solana RPC 响应超出大小上限");
+    }
+}
 
 const Generic *member(const Generic &value, std::string_view key) {
     if (!value.holds<Object>()) return nullptr;
@@ -109,11 +135,14 @@ std::string write_raw_json(const Generic &value) {
 Generic parse_json(std::string_view body) {
     Generic root;
     if (const auto error = glz::read_json(root, body); error) {
-        throw std::runtime_error("Solana RPC JSON 解析失败: " + glz::format_error(error, body));
+        // 上游正文不可信，只写进服务端日志，绝不回显给调用方或落库。
+        LOG_ERROR << "Solana RPC JSON 解析失败: " << glz::format_error(error, body);
+        throw std::runtime_error("Solana RPC 响应解析失败");
     }
     if (const auto rpc_error = member(root, "error"); rpc_error && rpc_error->holds<Object>()) {
         const auto message = string_member(*rpc_error, "message").value_or("Solana RPC error");
-        throw std::runtime_error("Solana RPC 请求失败: " + message);
+        LOG_ERROR << "Solana RPC 返回错误: " << message;
+        throw std::runtime_error("Solana RPC 请求失败");
     }
     return root;
 }
@@ -186,13 +215,19 @@ void collect_token_balances(const Generic *balances,
     for (const auto &item : balances->get<Array>()) {
         const auto owner = normalize_solana_address(string_member(item, "owner"));
         if (!owner || *owner != wallet) continue;
-        const auto mint = string_member(item, "mint");
+        // mint 直接决定 assets.contract_address 与 symbol，必须先按 Solana 地址规范化，
+        // 否则上游可以塞进任意长度、任意字节的字符串。
+        const auto mint = normalize_solana_address(string_member(item, "mint"));
         if (!mint) continue;
         const auto ui = member(item, "uiTokenAmount");
         if (!ui) continue;
         const auto raw = uint_from_decimal(string_member(*ui, "amount"));
         if (!raw) continue;
-        const auto decimals = static_cast<std::int16_t>(int_member(*ui, "decimals").value_or(0));
+        // assets.decimals 有 CHECK (decimals BETWEEN 0 AND 18)；越界值既无法落库，
+        // 也会让金额换算失去意义，因此整条余额记录直接丢弃而不是截断。
+        const auto raw_decimals = int_member(*ui, "decimals").value_or(-1);
+        if (raw_decimals < 0 || raw_decimals > 18) continue;
+        const auto decimals = static_cast<std::int16_t>(raw_decimals);
         const auto index = int_member(item, "accountIndex").value_or(0);
         const std::string key = *mint + "#" + std::to_string(index);
         auto &slot = groups[key];
@@ -347,38 +382,60 @@ SolanaAdapter::SolanaAdapter(SolanaAdapterOptions options) : options_(std::move(
     if (options_.rpcUrl.empty()) options_.rpcUrl = "https://api.mainnet-beta.solana.com";
     while (options_.rpcUrl.ends_with('/')) options_.rpcUrl.pop_back();
     options_.limit = std::clamp<std::uint16_t>(options_.limit, 1, 1000);
+    options_.requestTimeoutSeconds = std::clamp(options_.requestTimeoutSeconds, 1.0, 60.0);
+    options_.fetchBudgetSeconds =
+        std::clamp(options_.fetchBudgetSeconds, options_.requestTimeoutSeconds, 300.0);
 }
 
-drogon::Task<std::string> SolanaAdapter::post(std::string body) const {
+drogon::Task<std::string> SolanaAdapter::post(std::string body, double timeout_seconds) const {
     auto client = drogon::HttpClient::newHttpClient(options_.rpcUrl);
     auto request = drogon::HttpRequest::newHttpRequest();
     request->setMethod(drogon::Post);
     request->setContentTypeCode(drogon::CT_APPLICATION_JSON);
     request->setBody(std::move(body));
-    const auto response = co_await client->sendRequestCoro(request, 30.0);
+    const auto response = co_await client->sendRequestCoro(request, timeout_seconds);
     if (!response || response->statusCode() < 200 || response->statusCode() >= 300) {
+        if (response) LOG_ERROR << "Solana RPC 请求失败，HTTP 状态码 " << response->statusCode();
         throw std::runtime_error("Solana RPC 请求失败");
     }
+    reject_oversized_response(response);
     co_return std::string(response->body());
 }
 
 drogon::Task<std::vector<ChainTransactionInput>>
 SolanaAdapter::fetch_wallet_transactions(std::string_view normalized_address) const {
     const std::string address(normalized_address);
+    // 整轮抓取的墙钟预算：慢速或恶意端点最多消耗这么久，之后返回已取得的部分结果，
+    // 而不是让 HTTP 请求和自动同步调度器一起挂起。
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(options_.fetchBudgetSeconds));
+    const auto remaining_seconds = [&deadline] {
+        return std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count();
+    };
+
     const std::string signatures_body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSignaturesForAddress\",\"params\":[\"" +
         json_escape(address) + "\",{\"limit\":" + std::to_string(options_.limit) + ",\"commitment\":\"finalized\"}]}";
-    const auto signatures_root = parse_json(co_await post(signatures_body));
+    const auto signatures_root = parse_json(
+        co_await post(signatures_body, std::min(options_.requestTimeoutSeconds, remaining_seconds())));
     const auto signatures = result_member(signatures_root);
     if (!signatures || !signatures->holds<Array>()) co_return std::vector<ChainTransactionInput>{};
 
     std::vector<ChainTransactionInput> output;
     for (const auto &item : signatures->get<Array>()) {
+        const auto left = remaining_seconds();
+        if (left <= 0.0) {
+            LOG_WARN << "Solana 同步超出 " << options_.fetchBudgetSeconds
+                     << " 秒预算，返回部分结果：已解析 " << output.size() << " 笔交易";
+            break;
+        }
         if (const auto err = member(item, "err"); err && !err->holds<glz::generic::null_t>()) continue;
         const auto signature = string_member(item, "signature");
         if (!signature || signature->empty()) continue;
         const std::string transaction_body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getTransaction\",\"params\":[\"" +
             json_escape(*signature) + "\",{\"encoding\":\"jsonParsed\",\"commitment\":\"finalized\",\"maxSupportedTransactionVersion\":0}]}";
-        const auto transaction_json = co_await post(transaction_body);
+        const auto transaction_json =
+            co_await post(transaction_body, std::min(options_.requestTimeoutSeconds, left));
         const auto numbers = parse_transaction_numbers(transaction_json).value_or(SolanaTransactionNumbers{});
         const auto transaction_root = parse_json(transaction_json);
         const auto transaction = result_member(transaction_root);

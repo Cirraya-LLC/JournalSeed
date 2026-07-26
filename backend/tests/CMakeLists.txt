@@ -3,6 +3,8 @@ find_package(Catch2 3.8.1 CONFIG REQUIRED)
 add_executable(journalseed_tests
   money_test.cpp
   journal_entry_test.cpp
+  tron_test.cpp
+  chain_test.cpp
   app_config_test.cpp
   formula_graph_test.cpp
   lua_registry_test.cpp

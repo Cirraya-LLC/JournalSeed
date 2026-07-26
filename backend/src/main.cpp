@@ -9,6 +9,7 @@
 #include <glaze/glaze.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <filesystem>
 #include <functional>
@@ -35,6 +36,15 @@ std::filesystem::path locate_directory(std::string_view configured,
 
 std::string event_json(bool success, std::string detail) {
     glz::generic event;
+    event["success"] = success;
+    event["detail"] = std::move(detail);
+    auto json = glz::write_json(event);
+    return json ? std::move(*json) : std::string{"{\"success\":false}"};
+}
+
+std::string wallet_event_json(std::string wallet_id, bool success, std::string detail) {
+    glz::generic event;
+    event["walletId"] = std::move(wallet_id);
     event["success"] = success;
     event["detail"] = std::move(detail);
     auto json = glz::write_json(event);
@@ -111,6 +121,7 @@ int main(int argc, char **argv) {
             repository, functions);
         auto api = std::make_shared<journalseed::api::ApiController>(service);
         api->register_routes();
+        std::atomic_bool wallet_scheduler_running{false};
 
         functions->start([weak_api = std::weak_ptr(api)](const auto &result) {
             if (const auto controller = weak_api.lock()) {
@@ -161,6 +172,54 @@ int main(int argc, char **argv) {
 
         const auto hardware_threads = std::max(2U, std::thread::hardware_concurrency());
         const auto http_threads = static_cast<std::size_t>(std::min(hardware_threads, 16U));
+        drogon::app().getLoop()->runEvery(
+            60.0,
+            [repository,
+             service,
+             weak_api = std::weak_ptr(api),
+             &wallet_scheduler_running]() {
+                if (wallet_scheduler_running.exchange(true)) return;
+                drogon::async_run([repository,
+                                   service,
+                                   weak_api,
+                                   &wallet_scheduler_running]() -> drogon::Task<> {
+                    try {
+                        const auto user_id = co_await repository->first_admin_user_id();
+                        if (!user_id) {
+                            wallet_scheduler_running.store(false);
+                            co_return;
+                        }
+                        const auto wallet_ids = co_await repository->list_due_wallet_ids(10);
+                        for (const auto &wallet_id : wallet_ids) {
+                            if (const auto controller = weak_api.lock()) {
+                                controller->publish_event(
+                                    "wallet.sync.started",
+                                    wallet_event_json(wallet_id, true, "自动同步开始"));
+                            }
+                            auto result = co_await service->sync_wallet(wallet_id, *user_id);
+                            if (const auto controller = weak_api.lock()) {
+                                if (result) {
+                                    controller->publish_event(
+                                        "wallet.sync.completed",
+                                        wallet_event_json(wallet_id, true, "自动同步完成"));
+                                } else {
+                                    controller->publish_event(
+                                        "wallet.sync.failed",
+                                        wallet_event_json(wallet_id, false, result.error().detail));
+                                }
+                            }
+                        }
+                    } catch (const std::exception &exception) {
+                        if (const auto controller = weak_api.lock()) {
+                            controller->publish_event(
+                                "wallet.sync.failed",
+                                wallet_event_json("", false, exception.what()));
+                        }
+                    }
+                    wallet_scheduler_running.store(false);
+                    co_return;
+                });
+            });
         std::cout << "JournalSeed http://" << config.host << ':' << config.port
                   << "，Lua 函数 " << *function_count << '\n';
         drogon::app()

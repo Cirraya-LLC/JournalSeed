@@ -6,10 +6,11 @@ ALTER TABLE chain_networks ADD CONSTRAINT chain_networks_chain_type_check
 
 ALTER TABLE chain_networks ADD COLUMN chain_id BIGINT;
 ALTER TABLE chain_networks ADD COLUMN address_family TEXT;
-UPDATE chain_networks
-   SET chain_id = NULL,
-       address_family = 'tron'
- WHERE code = 'tron-mainnet';
+-- Backfill every pre-existing row, not just the seeded mainnet: any extra network an
+-- operator added (testnet, manual seed) would otherwise leave address_family NULL and
+-- abort the SET NOT NULL below. chain_type and address_family share the same domain
+-- ('tron', 'evm', 'solana'), so copying it across is always valid.
+UPDATE chain_networks SET address_family = chain_type;
 ALTER TABLE chain_networks ALTER COLUMN address_family SET NOT NULL;
 ALTER TABLE chain_networks ADD CONSTRAINT chain_networks_address_family_check
     CHECK (address_family IN ('tron', 'evm', 'solana'));
@@ -19,6 +20,8 @@ VALUES
     ('ethereum-mainnet', 'Ethereum Mainnet', 'evm', 1, 'evm', 'ETH', 18, 'https://etherscan.io/tx/{txHash}'),
     ('polygon-mainnet', 'Polygon PoS Mainnet', 'evm', 137, 'evm', 'POL', 18, 'https://polygonscan.com/tx/{txHash}'),
     ('solana-mainnet', 'Solana Mainnet', 'solana', NULL, 'solana', 'SOL', 9, 'https://solscan.io/tx/{txHash}')
+-- Refresh the chain descriptors we own, but leave `enabled` alone: a network an
+-- operator deliberately disabled must stay disabled across upgrades.
 ON CONFLICT (code) DO UPDATE SET
     name = EXCLUDED.name,
     chain_type = EXCLUDED.chain_type,
@@ -26,8 +29,7 @@ ON CONFLICT (code) DO UPDATE SET
     address_family = EXCLUDED.address_family,
     native_asset_symbol = EXCLUDED.native_asset_symbol,
     native_decimals = EXCLUDED.native_decimals,
-    explorer_tx_url = EXCLUDED.explorer_tx_url,
-    enabled = TRUE;
+    explorer_tx_url = EXCLUDED.explorer_tx_url;
 
 ALTER TABLE chain_settings ADD COLUMN etherscan_api_key_ciphertext BYTEA;
 ALTER TABLE chain_settings ADD COLUMN etherscan_api_key_nonce BYTEA;

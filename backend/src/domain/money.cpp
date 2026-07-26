@@ -2,9 +2,20 @@
 
 #include <algorithm>
 #include <limits>
+#include <utility>
 
 namespace journalseed::domain {
 namespace {
+
+constexpr int kScale = 18;
+
+constexpr Money::rep pow10(int exponent) {
+    Money::rep result = 1;
+    for (int index = 0; index < exponent; ++index) {
+        result *= 10;
+    }
+    return result;
+}
 
 constexpr Money::rep decimal_limit() {
     Money::rep result = 1;
@@ -14,10 +25,16 @@ constexpr Money::rep decimal_limit() {
     return result - 1;
 }
 
+constexpr Money::rep kScaleFactor = pow10(kScale);
 constexpr Money::rep kMaximumMinorUnits = decimal_limit();
+constexpr Money::rep kMaximumWholeUnits = kMaximumMinorUnits / kScaleFactor;
 
 MoneyError error(MoneyErrorCode code, std::string message) {
     return MoneyError{.code = code, .message = std::move(message)};
+}
+
+bool is_digit(char character) noexcept {
+    return character >= '0' && character <= '9';
 }
 
 }  // namespace
@@ -46,45 +63,50 @@ std::expected<Money, MoneyError> Money::parse(std::string_view value) {
     }
 
     const auto fraction_size = decimal == std::string_view::npos ? 0U : value.size() - decimal - 1;
-    if (decimal != std::string_view::npos && (fraction_size == 0 || fraction_size > 2)) {
+    if (decimal != std::string_view::npos && (fraction_size == 0 || fraction_size > kScale)) {
         return std::unexpected(
-            error(MoneyErrorCode::invalid_scale, "金额最多保留两位小数"));
+            error(MoneyErrorCode::invalid_scale, "金额最多保留十八位小数"));
     }
 
     std::size_t first_significant = offset;
     while (first_significant < integer_end && value[first_significant] == '0') {
         ++first_significant;
     }
-    if (integer_end - first_significant > 36) {
+    if (integer_end - first_significant > 20) {
         return std::unexpected(
-            error(MoneyErrorCode::out_of_range, "金额整数部分最多 36 位"));
+            error(MoneyErrorCode::out_of_range, "金额整数部分最多 20 位"));
     }
 
-    rep minor_units = 0;
+    rep whole_units = 0;
     for (std::size_t index = offset; index < integer_end; ++index) {
         const char character = value[index];
-        if (character < '0' || character > '9') {
+        if (!is_digit(character)) {
             return std::unexpected(
                 error(MoneyErrorCode::invalid_character, "金额只能包含数字和小数点"));
         }
-        minor_units = minor_units * 10 + static_cast<rep>(character - '0');
+        whole_units = whole_units * 10 + static_cast<rep>(character - '0');
+        if (whole_units > kMaximumWholeUnits) {
+            return std::unexpected(
+                error(MoneyErrorCode::out_of_range, "金额超出 38 位有效数字范围"));
+        }
     }
-    minor_units *= 100;
 
+    rep fractional_units = 0;
     if (decimal != std::string_view::npos) {
         for (std::size_t index = decimal + 1; index < value.size(); ++index) {
             const char character = value[index];
-            if (character < '0' || character > '9') {
+            if (!is_digit(character)) {
                 return std::unexpected(
                     error(MoneyErrorCode::invalid_character, "金额只能包含数字和小数点"));
             }
+            fractional_units = fractional_units * 10 + static_cast<rep>(character - '0');
         }
-        minor_units += static_cast<rep>(value[decimal + 1] - '0') * 10;
-        if (fraction_size == 2) {
-            minor_units += static_cast<rep>(value[decimal + 2] - '0');
+        for (std::size_t index = fraction_size; index < static_cast<std::size_t>(kScale); ++index) {
+            fractional_units *= 10;
         }
     }
 
+    rep minor_units = whole_units * kScaleFactor + fractional_units;
     if (minor_units > kMaximumMinorUnits) {
         return std::unexpected(error(MoneyErrorCode::out_of_range, "金额超出 38 位有效数字范围"));
     }
@@ -92,6 +114,12 @@ std::expected<Money, MoneyError> Money::parse(std::string_view value) {
         minor_units = -minor_units;
     }
     return Money(minor_units);
+}
+
+bool Money::fits_scale(std::uint8_t decimals) const noexcept {
+    if (decimals > storage_scale()) return false;
+    const auto divisor = pow10(static_cast<int>(storage_scale() - decimals));
+    return minor_units_ % divisor == 0;
 }
 
 std::string Money::to_string() const {
@@ -103,11 +131,17 @@ std::string Money::to_string() const {
         magnitude /= 10;
     } while (magnitude != 0);
 
-    while (digits.size() < 3) {
+    while (digits.size() < static_cast<std::size_t>(kScale + 1)) {
         digits.push_back('0');
     }
     std::reverse(digits.begin(), digits.end());
-    digits.insert(digits.end() - 2, '.');
+    digits.insert(digits.end() - kScale, '.');
+
+    const auto decimal = digits.find('.');
+    while (digits.size() - decimal - 1 > 2 && digits.back() == '0') {
+        digits.pop_back();
+    }
+
     if (minor_units_ < 0) {
         digits.insert(digits.begin(), '-');
     }

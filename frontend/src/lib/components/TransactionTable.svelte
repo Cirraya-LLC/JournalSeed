@@ -46,12 +46,23 @@
     }
   }
 
-  function isNegative(amount: string): boolean {
-    return amount.startsWith('-');
+  function amountText(amount: string | null | undefined): string {
+    return typeof amount === 'string' ? amount.trim() : '';
   }
 
-  function isPositive(amount: string): boolean {
-    return !isNegative(amount) && !/^0+(?:\.0+)?$/.test(amount);
+  function isNegative(amount: string | null | undefined): boolean {
+    return amountText(amount).startsWith('-');
+  }
+
+  function isPositive(amount: string | null | undefined): boolean {
+    const value = amountText(amount);
+    return value !== '' && !isNegative(value) && !/^0+(?:\.0+)?$/.test(value);
+  }
+
+  function formatRowMoney(row: JournalRow): string {
+    const formatted = formatMoney(row.amount, row.assetDecimals);
+    const symbol = typeof row.assetSymbol === 'string' ? row.assetSymbol.trim() : '';
+    return symbol && symbol !== 'DEFAULT' ? `${formatted} ${symbol}` : formatted;
   }
 </script>
 
@@ -139,7 +150,7 @@
                       <span>{row.transferAccountName ?? '未分配'}</span>
                     </span>
                   {:else if column.system === 'amount'}
-                    <span>{formatMoney(String(value ?? '0.00'))}</span>
+                    <span>{formatRowMoney(row)}</span>
                   {:else if column.type === 'boolean'}
                     {#if value === true}<Check size={16} aria-label="是" />{:else}<span
                         class="empty-value">—</span
@@ -202,7 +213,7 @@
             </small>
           </span>
           <span class="mobile-amount">
-            {#if row.kind === 'note'}备注{:else}{formatMoney(row.amount)}{/if}
+            {#if row.kind === 'note'}备注{:else}{formatRowMoney(row)}{/if}
           </span>
         </button>
       {/each}

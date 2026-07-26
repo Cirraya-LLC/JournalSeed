@@ -77,6 +77,11 @@ export interface paths {
     };
     get?: never;
     put?: never;
+    /**
+     * @description Deletes the session and clears the cookie. Like every other write it requires a valid
+     *     session cookie **and** a matching `X-JournalSeed-CSRF` header, so an expired session
+     *     cannot be logged out again.
+     */
     post: operations['logout'];
     delete?: never;
     options?: never;
@@ -93,6 +98,12 @@ export interface paths {
     };
     get: operations['listLedgers'];
     put?: never;
+    /**
+     * @description `name` must be unique among ledgers that are not archived, compared
+     *     case-insensitively after trimming. Reusing an existing name is 409 `duplicate_value`
+     *     with `fields.name`; it used to reach the unique index and come back as 500
+     *     `database_error`.
+     */
     post: operations['createLedger'];
     delete?: never;
     options?: never;
@@ -107,6 +118,27 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
+    /**
+     * @description Period totals for the ledger.
+     *
+     *     **`from` and `to` are applied.** Both are inclusive `YYYY-MM-DD` calendar dates,
+     *     matched against `journal_rows.occurred_on`. They are validated as real calendar dates
+     *     (so `2026-13-45` and `2026-02-30` are rejected, not passed to the database), and
+     *     `from` must not be later than `to`; any of those failures is `validation_error` (422)
+     *     with `from` or `to` in `fields`. An omitted or empty bound leaves that side open.
+     *
+     *     **`from` bounds the flows only.** `income`, `expense`, `rowCount` and every
+     *     `assetSummaries[].income` / `.expense` are flows and are bounded on both sides.
+     *     `balance` is a stock: it is the **closing balance as of `to`** — every posting dated
+     *     on or before `to`, opening balances included — and `from` deliberately does not
+     *     affect it. Bounding a balance on the left would turn it into a movement over the
+     *     period that no longer reconciles with the account balances returned by
+     *     `GET /ledgers/{ledgerId}/accounts`.
+     *
+     *     An unknown or archived `ledgerId` is **not** a 404 here: the query selects no asset
+     *     and the response is the zero summary (`"0.00"` scalars, `rowCount: 0`, empty
+     *     `assetSummaries`).
+     */
     get: operations['getLedgerSummary'];
     put?: never;
     post?: never;
@@ -123,8 +155,36 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
+    /**
+     * @description Every user-visible account in the ledger, archived ones included. Internal system
+     *     accounts — the unallocated and opening-balance accounts, and the per-asset clearing
+     *     accounts, whether wallet synchronization created them or a manual row on a new asset
+     *     did — are never returned. Active accounts sort first.
+     *
+     *     The per-asset accounts wallet synchronization creates for the wallets themselves are
+     *     **not** system accounts and do appear here; they are what lets a manually created row
+     *     be denominated in a chain asset.
+     */
     get: operations['listAccounts'];
     put?: never;
+    /**
+     * @description Creates an account denominated in the ledger's default asset. There is no way to
+     *     choose an asset here; accounts on chain assets are created by wallet synchronization.
+     *
+     *     `openingBalance` is therefore constrained to the default asset's scale — two decimal
+     *     places — and a value that cannot be represented at that scale is `validation_error`
+     *     (422), not a silent round. The check is on the value: `"1.500000"` is accepted and
+     *     normalized to `"1.50"`, `"1.505"` is not. See `Money`.
+     *
+     *     Both rejections here are field-scoped: a bad `name` sets `fields.name`, and an
+     *     `openingBalance` that is either over-precise or not a parseable decimal at all sets
+     *     `fields.openingBalance`. Both are reported at once when both are wrong. This operation
+     *     used to return the same codes with an empty `fields`.
+     *
+     *     `name` must be unique among the ledger's active, non-system accounts, compared
+     *     case-insensitively. Reusing one is 409 `duplicate_value` with `fields.name`; it used
+     *     to reach the unique index and come back as 500 `database_error`.
+     */
     post: operations['createAccount'];
     delete?: never;
     options?: never;
@@ -139,8 +199,19 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
+    /**
+     * @description Every user-defined category in the ledger, archived ones included; system categories
+     *     are never returned. Active categories sort first.
+     */
     get: operations['listCategories'];
     put?: never;
+    /**
+     * @description `name` must be unique among the ledger's active, non-system categories *within one
+     *     `direction`*, compared case-insensitively: the same name may exist once as `income`
+     *     and once as `expense`. Reusing a name in the same direction is 409 `duplicate_value`
+     *     with `fields.name`; it used to reach the unique index and come back as 500
+     *     `database_error`.
+     */
     post: operations['createCategory'];
     delete?: never;
     options?: never;
@@ -155,8 +226,20 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
+    /**
+     * @description Ordered columns. The active list always begins with the five seeded system columns —
+     *     `date`, `description`, `account`, `category`, `amount` — and the amount column is
+     *     always `{"type": "money", "system": "amount"}`. `money` is a response-only column
+     *     type: it cannot be created through `createColumn`, which is why `ColumnInput.type`
+     *     does not list it.
+     */
     get: operations['listColumns'];
     put?: never;
+    /**
+     * @description Creates a user-defined column. `number` requires `decimalPlaces` in 0–18 and
+     *     `formula` requires a non-empty `formulaSource`; missing either is `validation_error`
+     *     (422). The system `money` type cannot be created here.
+     */
     post: operations['createColumn'];
     delete?: never;
     options?: never;
@@ -173,6 +256,43 @@ export interface paths {
     };
     get: operations['listRows'];
     put?: never;
+    /**
+     * @description Saves a row and its balanced postings.
+     *
+     *     **The row's asset follows its account.** It is resolved in strict precedence: the
+     *     asset of the account `accountId` names; failing that the asset the row already holds
+     *     (unreachable here, and on `updateRow` only for a `note` row, which has no account);
+     *     failing that the ledger's default asset. A row is therefore no longer pinned to the
+     *     default asset: creating one against a wallet-synchronized account denominates it in
+     *     that account's asset. That combination previously tripped the
+     *     `journal_rows_link_guard` database trigger and came back as `database_error` (500).
+     *
+     *     `amount` is validated against **that** asset's scale, so an 18-decimal asset accepts
+     *     significant digits eighteen places out where the two-decimal default asset would not.
+     *     The test is on the value rather than on the spelling: a value that cannot be
+     *     represented at the asset's scale is rejected with `validation_error` (422) carrying
+     *     `fields.amount` and is never silently rounded, but trailing zeros past the scale lose
+     *     nothing and are accepted and normalized away (`"0.750000000000000000"` becomes
+     *     `"0.75"` on a 2-decimal asset). See `Money`.
+     *
+     *     An `entry` row that omits `accountId` falls back to the ledger's internal unallocated
+     *     account, which is pinned to the default asset — so omitting the account also means
+     *     that asset's two decimals.
+     *
+     *     For `kind: entry` the counterparty posting goes to the clearing account **of the row's
+     *     own asset**, created on demand the first time an asset is used. These clearing
+     *     accounts are internal and never appear in `listAccounts`.
+     *
+     *     A `transfer` whose two accounts are denominated in different assets is refused with
+     *     `validation_error` (422) and `fields.transferAccountId`: a row carries exactly one
+     *     asset and all of its postings must share it, so a cross-asset transfer cannot be
+     *     expressed. It previously reached the database and returned 500.
+     *
+     *     Resolution order matters for which failure you see first: the account is looked up
+     *     before the asset, and the asset before the amount's precision. A request that names a
+     *     missing account *and* an over-precise amount is `account_not_found` (404), because
+     *     until the account is known there is no scale to check the amount against.
+     */
     post: operations['createRow'];
     delete?: never;
     options?: never;
@@ -193,6 +313,37 @@ export interface paths {
     delete: operations['recycleRow'];
     options?: never;
     head?: never;
+    /**
+     * @description Replaces the row and rebuilds its postings. The body is a full `RowInput`, not a
+     *     sparse patch.
+     *
+     *     **The asset is re-resolved from the submitted body**, by the same precedence
+     *     `createRow` uses: the asset of the account `accountId` names, else the asset the row
+     *     already holds, else the ledger's default asset. "Keeps its asset unless the account
+     *     changed" is a consequence of that rule rather than a separate branch — an unchanged
+     *     account resolves to the same asset, and moving the row to an account on another asset
+     *     moves the row's asset with it. A `note` row has no account, so editing one always
+     *     keeps its asset.
+     *
+     *     The corollary is worth stating plainly: dropping `accountId` from an `entry` row
+     *     re-denominates it into the ledger's default asset through the internal unallocated
+     *     account, which will then reject an `amount` that cannot be represented at two decimal
+     *     places.
+     *
+     *     `amount` is validated against the re-resolved asset's scale, which for a
+     *     wallet-synchronized row is not two decimals.
+     *
+     *     **Rows created by wallet synchronization are editable.** Rebuilding the postings
+     *     against the clearing account of the row's own asset is what makes that work; the
+     *     operation previously failed with `database_error` (500), because the postings were
+     *     rebuilt against the default asset's clearing accounts and the balance guard rejected
+     *     them. The movement link lives in `chain_movement_row_links`, which this operation
+     *     never touches, so `chainSource` survives the edit and a later synchronization still
+     *     skips the already-linked movement rather than overwriting your changes.
+     *
+     *     A `transfer` whose two accounts are denominated in different assets is
+     *     `validation_error` (422) with `fields.transferAccountId`, exactly as on `createRow`.
+     */
     patch: operations['updateRow'];
     trace?: never;
   };
@@ -222,9 +373,15 @@ export interface paths {
     get?: never;
     put?: never;
     post?: never;
+    /**
+     * @description Moves a column to the recycle bin. The seeded system amount column cannot be
+     *     recycled — the database keeps it alive by constraint — and the attempt matches no
+     *     recyclable row, so it comes back as 404 `column_not_found`, **not** as a 409.
+     */
     delete: operations['recycleColumn'];
     options?: never;
     head?: never;
+    /** @description Renames, resizes, or repositions a column. A column's `type` cannot be changed. */
     patch: operations['updateColumn'];
     trace?: never;
   };
@@ -285,6 +442,11 @@ export interface paths {
     };
     get?: never;
     put?: never;
+    /**
+     * @description Runs a registered Lua function and returns its result. Exact numbers must be passed
+     *     as JSON strings and parsed with `dec()`; a JSON number in the arguments is rejected
+     *     with `inexact_lua_number` (422) rather than being silently converted to a double.
+     */
     post: operations['invokeFunction'];
     delete?: never;
     options?: never;
@@ -317,11 +479,162 @@ export interface paths {
     };
     get?: never;
     put?: never;
+    /**
+     * @description Flags a queued or running job for cancellation. The flag is recorded synchronously;
+     *     the job's own status changes only once the worker observes it.
+     */
     post: operations['cancelJob'];
     delete?: never;
     options?: never;
     head?: never;
     patch?: never;
+    trace?: never;
+  };
+  '/chain-settings': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations['getChainSettings'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /**
+     * @description Saves provider credentials. Every submitted secret is encrypted with the key derived
+     *     from `JOURNALSEED_CHAIN_SETTINGS_KEY` before it reaches the database, so this operation
+     *     fails with `chain_settings_key_unconfigured` when that variable is unset or too weak.
+     *
+     *     Submitted RPC URLs are put through the same outbound egress check as synchronization,
+     *     but a rejection here is reported as a field-scoped `validation_error` (422) naming the
+     *     offending field, **not** as `rpc_endpoint_rejected`; that code is reserved for the
+     *     synchronization path.
+     */
+    patch: operations['updateChainSettings'];
+    trace?: never;
+  };
+  '/ledgers/{ledgerId}/wallets': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations['listWallets'];
+    put?: never;
+    /**
+     * @description A ledger watches a given address at most once per chain: the address is normalized
+     *     first (EVM addresses case-folded), so the same address in different casing is the
+     *     same wallet. Adding it a second time is 409 `duplicate_value` with `fields.address`;
+     *     it used to reach `wallet_accounts_active_address_unique` and come back as 500
+     *     `database_error`. The same address on a *different* chain is a separate wallet and
+     *     succeeds.
+     */
+    post: operations['createWallet'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/wallets/{walletId}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete: operations['deleteWallet'];
+    options?: never;
+    head?: never;
+    patch: operations['updateWallet'];
+    trace?: never;
+  };
+  '/wallets/{walletId}/sync': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * @description Runs one synchronization pass for the wallet and records a `wallet_sync` job for the
+     *     outcome. The provider endpoint is re-checked against the outbound egress rules on every
+     *     call, before any credential is used, so a previously accepted endpoint can still be
+     *     rejected here.
+     */
+    post: operations['syncWallet'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/ledgers/{ledgerId}/chain-transactions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations['listChainTransactions'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/ledgers/{ledgerId}/address-labels': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations['listAddressLabels'];
+    put?: never;
+    /**
+     * @description Creates a label. This is not an upsert: labelling an address that already has a label
+     *     on the same chain does not replace the existing one. It is 409 `duplicate_value` with
+     *     `fields.address`; it used to reach `wallet_address_labels_chain_unique` and come back
+     *     as 500 `database_error`. Update an existing label through
+     *     `PATCH /address-labels/{labelId}` instead.
+     *
+     *     `chain` must be one of the four concrete chain codes; the literal `evm` is rejected
+     *     here even though the storage layer accepts it. See the open design question on
+     *     `AddressLabel.scope`.
+     */
+    post: operations['createAddressLabel'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/address-labels/{labelId}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete: operations['deleteAddressLabel'];
+    options?: never;
+    head?: never;
+    patch: operations['updateAddressLabel'];
     trace?: never;
   };
   '/events': {
@@ -382,6 +695,19 @@ export interface components {
       id: string;
       balance: components['schemas']['Money'];
       archived: boolean;
+      /**
+       * Format: uuid
+       * @description The asset the account is denominated in, resolved by join on every read. Always
+       *     populated; accounts created outside wallet synchronization use the ledger's
+       *     `DEFAULT` asset.
+       */
+      assetId: string;
+      assetSymbol: string;
+      /**
+       * @description Scale for `openingBalance` and `balance`. `DEFAULT` is 2; TRX and USDT are 6;
+       *     SOL is 9; ETH and POL are 18.
+       */
+      assetDecimals: number;
     };
     CategoryInput: {
       name: string;
@@ -414,49 +740,179 @@ export interface components {
     JournalRow: components['schemas']['RowInput'] & {
       /** Format: uuid */
       id: string;
+      /**
+       * Format: uuid
+       * @description The asset this row is denominated in; drives how `amount` is scaled and what
+       *     precision a write to this row may carry.
+       *
+       *     It is the asset of the row's account, so it changes when the row is moved to
+       *     an account on another asset and is otherwise stable. Rows with no account —
+       *     `note` rows — hold the asset they were created with, which is the ledger
+       *     default unless wallet synchronization created them. It is **not** necessarily
+       *     the ledger's default asset: see `createRow`.
+       */
+      assetId: string;
+      assetSymbol: string;
+      assetDecimals: number;
       /** Format: int64 */
       revision: number;
+      /**
+       * @description Absent when the row has no account, and also absent when the row is posted
+       *     against an internal system account, which is never exposed to clients.
+       */
       accountName?: string | null;
+      /** @description Absent when the row has no category, or the category is a system one. */
       categoryName?: string | null;
       transferAccountName?: string | null;
       /** Format: date-time */
       createdAt: string;
       /** Format: date-time */
       updatedAt: string;
+      /**
+       * @description The on-chain movement this row was generated from.
+       *
+       *     **Populated.** The row-reading query resolves the link recorded in
+       *     `chain_movement_row_links` on every read, so this object is present on rows
+       *     that wallet synchronization created and **absent on ordinary manual rows**.
+       *     Presence is therefore a reliable test for "this row came from a wallet sync";
+       *     it is not a field that is merely sometimes filled in.
+       *
+       *     Both the single-row and the paginated list responses populate it.
+       *
+       *     **It survives an edit.** `updateRow` rewrites the row, its cells and its
+       *     postings, but never `chain_movement_row_links`, so a synchronized row that a
+       *     user has since edited still reports where it came from — and a later
+       *     synchronization still skips the linked movement rather than restoring the
+       *     generated text.
+       */
+      chainSource?: components['schemas']['ChainSource'] | null;
     };
     RowPage: {
       items: components['schemas']['JournalRow'][];
       nextCursor?: string | null;
       hasMore: boolean;
     };
+    /**
+     * @description A column definition as submitted to `createColumn`. Deliberately a **narrower** shape
+     *     than `Column`: `money` is a server-owned type and cannot be requested here.
+     */
     ColumnInput: {
       name: string;
-      /** @enum {string} */
+      /**
+       * @description The seven creatable column types. `money` is missing on purpose — see
+       *     `Column.type`.
+       * @enum {string}
+       */
       type: 'text' | 'number' | 'date' | 'boolean' | 'option' | 'relation' | 'formula';
+      /** @description Required when `type` is `number`; ignored otherwise. */
       decimalPlaces?: number;
+      /** @description Required and non-empty when `type` is `formula`. */
       formulaSource?: string;
       formulaResultType?: string;
       formulaDependencies?: string[];
     };
+    /**
+     * @description Sparse patch. Only the three fields below can be changed; a column's `type` is
+     *     immutable.
+     */
     ColumnPatch: {
       name?: string;
       position?: number;
       width?: number;
     };
-    Column: components['schemas']['ColumnInput'] & {
+    /**
+     * @description A column as returned by the API.
+     *
+     *     This is **not** `ColumnInput` plus identity fields, and is deliberately not modelled
+     *     with `allOf` against it: `type` here admits `money`, which `ColumnInput` must not.
+     */
+    Column: {
       /** Format: uuid */
       id: string;
-      system: string | null;
+      name: string;
+      /**
+       * @description The column's value type.
+       *
+       *     `money` is emitted for the seeded system amount column — which every ledger has,
+       *     and which the database pins to exactly `value_type = 'money'` — so a client that
+       *     does not accept `money` fails on the very first column of every ledger. It is not
+       *     creatable through `createColumn`, which is why `ColumnInput.type` omits it.
+       * @enum {string}
+       */
+      type: 'text' | 'number' | 'date' | 'boolean' | 'option' | 'relation' | 'formula' | 'money';
+      /**
+       * @description The system role this column fills, or absent for a user-defined column. The five
+       *     seeded columns are `date`, `description`, `account`, `category`, `amount`.
+       * @enum {string|null}
+       */
+      system: 'date' | 'description' | 'account' | 'category' | 'amount' | null;
       position: number;
       width: number;
+      decimalPlaces?: number | null;
+      formulaSource?: string | null;
+      formulaResultType?: string | null;
+      formulaDependencies: string[];
       recycled: boolean;
     };
+    /**
+     * @description Totals for one ledger over the requested period.
+     *
+     *     **The scalar `balance` / `income` / `expense` are scoped to the ledger's default
+     *     asset.** This is a behavioural change: they used to sum every asset the ledger holds
+     *     — adding CNY to ETH to SOL — and round the mixture to two decimals, which is not a
+     *     quantity of anything. They now report the one asset a ledger always has and the one
+     *     its manually entered rows are denominated in, at that asset's scale. Every other
+     *     asset appears in `assetSummaries` and is never folded into these three fields.
+     *
+     *     A client that read the old scalars as a ledger-wide total must switch to
+     *     `assetSummaries`. For a single-asset ledger — one that has never synchronized a
+     *     wallet — the values are unchanged.
+     */
     LedgerSummary: {
+      /**
+       * @description Closing balance of the ledger's **default asset** as of `to`: the sum of every
+       *     non-archived user account's opening balance plus every posting dated on or before
+       *     `to`. A stock, not a flow — `from` does not bound it. Equals
+       *     `assetSummaries[0].balance`.
+       */
       balance: components['schemas']['Money'];
+      /**
+       * @description Sum of positive `entry` row amounts in the **default asset** within
+       *     `from`…`to`, inclusive. Transfers and notes are excluded. Equals
+       *     `assetSummaries[0].income`.
+       */
       income: components['schemas']['Money'];
+      /**
+       * @description Sum of negative `entry` row amounts in the **default asset** within
+       *     `from`…`to`, inclusive, and therefore itself negative or zero — it is a signed
+       *     total, not a magnitude. Equals `assetSummaries[0].expense`.
+       */
       expense: components['schemas']['Money'];
-      /** Format: int64 */
+      /**
+       * Format: int64
+       * @description Number of non-deleted rows in the period, **across all assets**. Unlike the money
+       *     fields this stays ledger-wide, because a count is commensurable even when the
+       *     amounts are not. Bounded on both sides by `from` and `to`. Counts rows of every
+       *     kind, not just `entry`.
+       */
       rowCount: number;
+      /**
+       * @description One entry per asset the ledger holds, each rendered at its own scale. **The
+       *     ledger's default asset is always first**; the rest follow by symbol. This array
+       *     used to be permanently empty.
+       *
+       *     Present for every asset that exists on the ledger, including one whose balance
+       *     and flows are all zero. Empty only when `ledgerId` matches no active ledger.
+       *
+       *     **Key this array by `assetId`, never by `symbol`.** `symbol` is not unique: a
+       *     ledger that has synchronized wallets on more than one chain legitimately holds
+       *     two distinct assets with the same symbol — Ethereum USDC and Solana USDC are
+       *     different tokens, with different `assetId`s and possibly different `decimals`,
+       *     and both appear as `"USDC"`. Only `assetId` identifies an entry; a client that
+       *     builds a map on `symbol` silently drops one of them and reports a balance that is
+       *     missing a chain's holdings.
+       */
+      assetSummaries: components['schemas']['AssetSummary'][];
     };
     LuaFunction: {
       name: string;
@@ -470,7 +926,12 @@ export interface components {
         type: 'text' | 'number' | 'date' | 'boolean' | 'option';
         label: string;
         required: boolean;
-        options?: string[];
+        /**
+         * @description Always present. A parameter with no declared choices — every type other
+         *     than `option`, and an `option` that declared none — reports `[]`; this is
+         *     an array, not an optional, so it is never omitted.
+         */
+        options: string[];
       }[];
     };
     LuaFunctionInput: {
@@ -481,37 +942,645 @@ export interface components {
       /** Format: uuid */
       id: string;
       /** @enum {string} */
-      kind: 'formula_recalc' | 'csv_import' | 'csv_export';
+      kind: 'formula_recalc' | 'csv_import' | 'csv_export' | 'wallet_backfill' | 'wallet_sync';
       /** @enum {string} */
       status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
       /** Format: int64 */
       done: number;
       /** Format: int64 */
       total: number;
-      error?: Record<string, never> | null;
+      /**
+       * @description Absent unless the job failed. When present it holds exactly one key, `detail`,
+       *     carrying the same redacted message the corresponding problem response returned; it
+       *     never contains upstream provider output.
+       */
+      error?: {
+        [key: string]: string;
+      } | null;
       /** Format: date-time */
       createdAt: string;
     };
     /**
+     * @description Exact decimal string. Never a JSON number: monetary values cross this boundary as
+     *     strings so that no client parses them into a binary float.
+     *
+     *     **Scale is asset-driven, and uniform per asset.** Every value the server emits is
+     *     rendered as `round(value, assets.decimals)` for the asset it belongs to, so it always
+     *     carries exactly that asset's number of decimal places — padded, not truncated. The
+     *     applicable scale is the `assetDecimals` (or `AssetSummary.decimals`) shipped beside
+     *     the value: `DEFAULT` is 2, TRX and USDT are 6, SOL is 9, ETH and POL are 18.
+     *
+     *     This holds for every Money field in the API alike — `JournalRow.amount`,
+     *     `Account.balance` and `Account.openingBalance`, the `LedgerSummary` and
+     *     `AssetSummary` figures, and `ChainTransaction.amount`. Previously the storage scale
+     *     or a fixed 2-decimal cast leaked through, so the same underlying value could come
+     *     back at three different scales in one set of responses and an 18-decimal asset was
+     *     silently rounded — `0.747900000000000000` ETH was returned as `"0.75"`.
+     *
+     *     **On input**, the check is on the *value*, not on how it is spelled. A value is
+     *     rejected with `validation_error` (422) and `fields.amount` only when it could not be
+     *     represented at its asset's scale — that is, when writing it at that scale would lose
+     *     information. Digits beyond the scale that are all zeros lose nothing, so they are
+     *     accepted and normalized away: on a 2-decimal asset `"0.750000000000000000"` is stored
+     *     and returned as `"0.75"`, while `"0.751"` is rejected. Nothing is ever rounded to fit,
+     *     and nothing is ever stored at excess precision. The same code and the same
+     *     `fields.amount` cover a value that cannot be represented at the 18 decimal places the
+     *     storage scale holds; `invalid_amount` is reserved for a value that is not a parseable
+     *     decimal at all — `abc`, `1.`, `1.2.3`, `1e5` (exponent notation is not accepted).
+     *
+     *     **Which asset applies on input** depends on the field. `AccountInput.openingBalance`
+     *     is always the ledger's default asset, so it is limited to two decimal places.
+     *     `RowInput.amount` is checked against the asset resolved for that row — the asset of
+     *     the account it points at, falling back to the row's existing asset and then to the
+     *     ledger default — so the same JSON body can be accepted on one account and rejected on
+     *     another. See `createRow`.
+     *
+     *     The pattern below describes the emitted form. Input is slightly more permissive:
+     *     leading zeros in the integer part are accepted and normalized away.
      * @example 1250.00
      * @example -48.50
-     * @example 0.00
+     * @example 12.500000
+     * @example 0.747900000000000000
      */
     Money: string;
+    /**
+     * @description One ledger's holdings and period flows in a single asset. All three money fields are
+     *     rendered at this asset's own `decimals`, and values from different entries in the
+     *     array must never be added together.
+     *
+     *     `assetId` is the identity of an entry. `symbol` is a label and may repeat within one
+     *     `assetSummaries` array — see the note there.
+     */
+    AssetSummary: {
+      /**
+       * Format: uuid
+       * @description Unique per asset, and the only field safe to key this array by.
+       */
+      assetId: string;
+      /**
+       * @description Display ticker. **Not unique within a ledger**: the same symbol can name two
+       *     different assets on two different chains.
+       * @example DEFAULT
+       * @example ETH
+       * @example USDT
+       * @example SOL
+       */
+      symbol: string;
+      name: string;
+      /** @description Scale of `balance`, `income`, and `expense` in this entry. */
+      decimals: number;
+      /**
+       * @description Closing balance in this asset as of `to`, including account opening balances.
+       *     Not bounded by `from`.
+       */
+      balance: components['schemas']['Money'];
+      /** @description Sum of positive `entry` amounts in this asset within `from`…`to`. */
+      income: components['schemas']['Money'];
+      /**
+       * @description Sum of negative `entry` amounts in this asset within `from`…`to`; negative or
+       *     zero.
+       */
+      expense: components['schemas']['Money'];
+    };
+    ChainSettings: {
+      /** @description Whether a TronGrid API key is stored. The key itself is never returned. */
+      tronGridApiKeyConfigured: boolean;
+      /** @description Whether an Etherscan API key is stored. Optional, but recommended for Ethereum and Polygon EVM history lookups. */
+      etherscanApiKeyConfigured: boolean;
+      syncIntervalMinutes: number;
+      /**
+       * Format: uri
+       * @description Always the fixed public default `https://api.trongrid.io`. There is no stored
+       *     TronGrid endpoint override, so this value never varies.
+       */
+      tronGridEndpoint: string;
+      /** @description Whether a custom Ethereum Mainnet RPC URL is stored. */
+      ethereumRpcUrlConfigured: boolean;
+      /**
+       * @description Always the empty string. Ethereum history is read through Etherscan rather than an
+       *     RPC endpoint, so there is no public default to echo, and a configured custom URL is
+       *     a secret that is never returned. Use `ethereumRpcUrlConfigured` to tell whether one
+       *     is stored.
+       */
+      ethereumRpcEndpoint: string;
+      /** @description Whether a custom Polygon Mainnet RPC URL is stored. */
+      polygonRpcUrlConfigured: boolean;
+      /**
+       * @description Always the empty string, for the same reason as `ethereumRpcEndpoint`. Use
+       *     `polygonRpcUrlConfigured`.
+       */
+      polygonRpcEndpoint: string;
+      /** @description Whether a custom Solana Mainnet RPC URL is stored. Public Solana RPC endpoints are rate limited. */
+      solanaRpcUrlConfigured: boolean;
+      /**
+       * @description The public default `https://api.mainnet-beta.solana.com` when no custom URL is
+       *     stored, and the empty string when one is, since a custom URL is a secret and is
+       *     never returned.
+       */
+      solanaRpcEndpoint: string;
+    };
+    ChainSettingsPatch: {
+      tronGridApiKey?: string;
+      clearTronGridApiKey?: boolean;
+      /** @description Optional but recommended Etherscan API key for Ethereum and Polygon EVM providers. */
+      etherscanApiKey?: string;
+      clearEtherscanApiKey?: boolean;
+      /**
+       * Format: uri
+       * @description Secret custom Ethereum Mainnet RPC URL.
+       */
+      ethereumRpcUrl?: string;
+      clearEthereumRpcUrl?: boolean;
+      /**
+       * Format: uri
+       * @description Secret custom Polygon Mainnet RPC URL.
+       */
+      polygonRpcUrl?: string;
+      clearPolygonRpcUrl?: boolean;
+      /**
+       * Format: uri
+       * @description Secret custom Solana Mainnet RPC URL.
+       */
+      solanaRpcUrl?: string;
+      clearSolanaRpcUrl?: boolean;
+      syncIntervalMinutes?: number;
+    };
+    WalletInput: {
+      name: string;
+      /**
+       * @description Chain to synchronize. Ethereum and Polygon are EVM chains; address labels are
+       *     shared across them.
+       *
+       *     Listed as required, and you should always send it, but an omitted or blank value
+       *     is **defaulted to `tron-mainnet`** rather than rejected — the address is then
+       *     validated as a TRON address. Any other value is `validation_error` (422) with
+       *     `fields.chain`; `unsupported_chain` is reserved for `syncWallet`.
+       * @enum {string}
+       */
+      chain: 'tron-mainnet' | 'ethereum-mainnet' | 'polygon-mainnet' | 'solana-mainnet';
+      /** @description Public watch-only address for the selected chain: Base58Check for TRON, 0x EVM address for Ethereum/Polygon, or base58 Solana address. */
+      address: string;
+      /** @default true */
+      enabled: boolean;
+      /** @default true */
+      autoSync: boolean;
+    };
+    WalletPatch: {
+      name?: string;
+      enabled?: boolean;
+      autoSync?: boolean;
+    };
+    Wallet: components['schemas']['WalletInput'] & {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      ledgerId: string;
+      /** @enum {string} */
+      chain: 'tron-mainnet' | 'ethereum-mainnet' | 'polygon-mainnet' | 'solana-mainnet';
+      /**
+       * @description Display name seeded in `chain_networks`, joined on every read. One of
+       *     `TRON Mainnet`, `Ethereum Mainnet`, `Polygon PoS Mainnet`, `Solana Mainnet`.
+       * @example TRON Mainnet
+       * @example Polygon PoS Mainnet
+       */
+      chainName: string;
+      /** @description Elided form of `address`, derived server-side on each read. */
+      addressShort: string;
+      /**
+       * Format: date-time
+       * @description Absent until the wallet has been synchronized at least once.
+       */
+      lastSyncedAt?: string | null;
+      /**
+       * @description Absent when the last pass succeeded. Carries only the redacted failure message,
+       *     never upstream provider output.
+       */
+      lastError?: string | null;
+      /**
+       * @description From `wallet_sync_states`; defaults to `idle` when the wallet has no sync state
+       *     row yet.
+       * @enum {string}
+       */
+      syncStatus: 'idle' | 'running' | 'failed';
+      /**
+       * Format: date-time
+       * @description Present in practice, since the column is `NOT NULL DEFAULT`, but read through an
+       *     optional accessor and therefore not guaranteed by this contract.
+       */
+      createdAt?: string | null;
+    };
+    AddressLabelInput: {
+      /**
+       * @description Chain the label is created for. Only the four concrete chain codes are accepted;
+       *     the literal `evm` is rejected — as `validation_error` (422) with `fields.chain` —
+       *     even though the storage layer would accept it, so every label created through this
+       *     API is chain-scoped. See the open design question on `AddressLabel.scope`.
+       *
+       *     As on `WalletInput.chain`, an omitted or blank value is **defaulted to
+       *     `tron-mainnet`** rather than rejected, and the address is then validated as a TRON
+       *     address.
+       * @enum {string}
+       */
+      chain: 'tron-mainnet' | 'ethereum-mainnet' | 'polygon-mainnet' | 'solana-mainnet';
+      /** @description Public address to label: Base58Check for TRON, 0x EVM address for Ethereum/Polygon, or base58 Solana address. */
+      address: string;
+      displayName: string;
+      /** @enum {string} */
+      kind: 'customer' | 'self' | 'exchange' | 'merchant' | 'contract' | 'other';
+      note: string;
+    };
+    AddressLabelPatch: {
+      displayName?: string;
+      /** @enum {string} */
+      kind?: 'customer' | 'self' | 'exchange' | 'merchant' | 'contract' | 'other';
+      note?: string;
+    };
+    /**
+     * @description A stored counterparty label.
+     *
+     *     **Actual current behaviour.** Label creation is gated on the four concrete chain codes,
+     *     so every label the API can create today is stored with `scope: "chain"` and a concrete
+     *     `chain`. `scope: "evm"` is reachable in the storage layer and in the label-matching
+     *     query, but not through this API — see the open design question on `scope`.
+     *
+     *     Modelled standalone rather than as `allOf` over `AddressLabelInput`, because `chain`
+     *     here admits the literal `evm`, which the input schema must reject.
+     */
+    AddressLabel: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      ledgerId: string;
+      /** @description Public address: Base58Check for TRON, 0x EVM address for Ethereum/Polygon, or base58 Solana address. */
+      address: string;
+      displayName: string;
+      /** @enum {string} */
+      kind: 'customer' | 'self' | 'exchange' | 'merchant' | 'contract' | 'other';
+      note: string;
+      /**
+       * @description The label's chain network code. For an EVM-scoped label there is no concrete
+       *     chain to report — the row's `chain_network_id` is `NULL` — and the server
+       *     substitutes the literal `evm`. That value is included in this enum so the
+       *     contract matches what the server can actually emit; it is **not** a chain code
+       *     and must not be sent to any endpoint that takes a `chain`.
+       * @enum {string}
+       */
+      chain: 'tron-mainnet' | 'ethereum-mainnet' | 'polygon-mainnet' | 'solana-mainnet' | 'evm';
+      /**
+       * @description Display name from `chain_networks`, or the literal `EVM` for an EVM-scoped
+       *     label.
+       * @example Ethereum Mainnet
+       * @example Polygon PoS Mainnet
+       * @example EVM
+       */
+      chainName: string;
+      /**
+       * @description `chain` — the label is bound to the one network named by `chain`.
+       *     `evm` — the label is bound to no single network and matches the same `0x`
+       *     address on every EVM chain. Chain-scoped labels win over EVM-scoped ones when
+       *     both match.
+       *
+       *     > **Open design question — unresolved, do not treat either shape as settled.**
+       *     >
+       *     > `POST /ledgers/{ledgerId}/address-labels` validates `chain` against the four
+       *     > concrete `*-mainnet` codes before the repository is reached, so no request can
+       *     > currently produce an `evm`-scoped label. Everything underneath it is built and
+       *     > waiting: the insert accepts the literal `evm` and derives `scope` from whether
+       *     > the chain network resolved, the counterparty lookup already matches
+       *     > `lb.scope = 'evm'` across EVM chains, and migration 0003 creates
+       *     > `wallet_address_labels_evm_unique` — which no row can currently populate.
+       *     >
+       *     > If the gate is opened, the API also has to answer what `chain` should report
+       *     > for such a label. Two candidates, neither chosen:
+       *     >
+       *     > 1. Keep `evm` in the `chain` enum, as documented above. Cheapest, but `chain`
+       *     >    stops being a chain code and clients must special-case it.
+       *     > 2. Add an origin-chain column so the label records the concrete chain it was
+       *     >    created from, and keep reporting that concrete chain while `scope` alone
+       *     >    carries the cross-chain semantics. Keeps `chain` honest, costs a migration.
+       * @enum {string}
+       */
+      scope: 'chain' | 'evm';
+      /** @description Elided form of `address`, derived server-side on each read. */
+      addressShort: string;
+      /** Format: date-time */
+      updatedAt: string;
+    };
+    /**
+     * @description One side of a movement, with its label resolved. Always present as an object; the
+     *     label fields are absent when the address carries no label. A chain-scoped label is
+     *     preferred over an EVM-scoped one when both match.
+     */
+    ChainAddress: {
+      /**
+       * @description Empty string when the movement records no address for this side, for example the
+       *     counterparty of a fee movement.
+       */
+      address: string;
+      /** @description Elided form of `address`, derived server-side; empty when `address` is empty. */
+      addressShort: string;
+      /** Format: uuid */
+      labelId?: string | null;
+      displayName?: string | null;
+      /** @enum {string|null} */
+      kind?: 'customer' | 'self' | 'exchange' | 'merchant' | 'contract' | 'other' | null;
+    };
+    /**
+     * @description The on-chain movement a journal row was generated from.
+     *
+     *     **Emitted.** The row-reading query joins `chain_movement_row_links` and fills this
+     *     object in, so `JournalRow.chainSource` is present on every row wallet synchronization
+     *     created and absent on manual rows. The reverse direction is also available:
+     *     `ChainTransaction.rowId` reports the row a movement is linked to.
+     *
+     *     `assetDecimals` here is the scale of the *movement's* asset, read from the movement
+     *     rather than from the row. On an unedited synchronized row that is the same asset, so
+     *     it matches `JournalRow.assetDecimals`. The two can diverge if the row is later moved
+     *     to an account on another asset through `updateRow`: the movement is an immutable
+     *     historical fact and keeps reporting its own asset. Scale a row's `amount` by
+     *     `JournalRow.assetDecimals`, never by this field.
+     */
+    ChainSource: {
+      txHash: string;
+      /** @description Elided form of `txHash`, derived server-side. */
+      txHashShort: string;
+      /** @enum {string} */
+      chain: 'tron-mainnet' | 'ethereum-mainnet' | 'polygon-mainnet' | 'solana-mainnet';
+      /**
+       * @example TRON Mainnet
+       * @example Polygon PoS Mainnet
+       */
+      chainName: string;
+      /** @enum {string} */
+      direction: 'incoming' | 'outgoing' | 'internal' | 'fee';
+      assetSymbol: string;
+      assetDecimals: number;
+      origin: components['schemas']['ChainAddress'];
+      target: components['schemas']['ChainAddress'];
+    };
+    /**
+     * @description One asset movement. Direction, amount, and the two address sides only exist at movement
+     *     level, so a single on-chain transaction yields one item per movement it produced.
+     */
+    ChainTransaction: {
+      /** Format: uuid */
+      id: string;
+      txHash: string;
+      /** @description Elided form of `txHash`, derived server-side. */
+      txHashShort: string;
+      /**
+       * Format: date-time
+       * @description Absent when the provider did not report a block time.
+       */
+      blockTimestamp?: string | null;
+      /** @enum {string} */
+      chain: 'tron-mainnet' | 'ethereum-mainnet' | 'polygon-mainnet' | 'solana-mainnet';
+      /**
+       * @description Display name from `chain_networks`, joined on every read.
+       * @example TRON Mainnet
+       * @example Polygon PoS Mainnet
+       */
+      chainName: string;
+      /** Format: uuid */
+      assetId: string;
+      assetSymbol: string;
+      assetDecimals: number;
+      /** @enum {string} */
+      direction: 'incoming' | 'outgoing' | 'internal' | 'fee';
+      amount: components['schemas']['Money'];
+      origin: components['schemas']['ChainAddress'];
+      target: components['schemas']['ChainAddress'];
+      /**
+       * Format: uuid
+       * @description Absent when no journal row has been linked to this movement.
+       */
+      rowId?: string | null;
+      rowDescription?: string | null;
+    };
+    /**
+     * @description Outcome of one synchronization pass.
+     *
+     *     The pass persists everything it fetched in a single database transaction: chain
+     *     transactions, assets, the per-asset wallet and clearing accounts, asset movements, and
+     *     the journal rows and postings generated from those movements. All three counters report
+     *     what that transaction actually wrote.
+     *
+     *     A movement produces a journal row only if it is not already linked to one. Re-syncing a
+     *     window therefore creates no duplicates and never rewrites a row a user has since edited,
+     *     and `movementsCreated` / `rowsCreated` come back as `0` for an unchanged window.
+     *     `incoming` movements become income entries, `outgoing` and `fee` become expense entries,
+     *     and `internal` movements — transfers between two addresses the user already owns —
+     *     become zero-amount note rows with no postings, so they are not counted twice. A
+     *     zero-amount movement in any other direction is recorded as a movement but produces no
+     *     row.
+     */
+    SyncResult: {
+      /** @description The recorded `wallet_sync` job, with status `completed`. */
+      job: components['schemas']['Job'];
+      /**
+       * Format: int64
+       * @description Chain transactions written or refreshed by this pass.
+       */
+      transactionsSeen: number;
+      /**
+       * Format: int64
+       * @description Asset movements newly inserted by this pass. Movements already stored under the same
+       *     movement key are left untouched and not counted.
+       */
+      movementsCreated: number;
+      /**
+       * Format: int64
+       * @description Journal rows created and linked to a movement by this pass, including the
+       *     zero-amount note rows generated for `internal` movements.
+       */
+      rowsCreated: number;
+    };
+    /**
+     * @description RFC 9457 problem detail. `detail` and `fields` are always present; `fields` is `{}`
+     *     when the failure is not field-scoped.
+     */
     Problem: {
-      /** Format: uri-reference */
+      /**
+       * Format: uri-reference
+       * @description Always `/problems/{code}`, for every value in the `code` enum without exception —
+       *     every problem is built by one factory that derives `type` from `code`, so the two
+       *     cannot drift. `database_error` in particular reports
+       *     `type: "/problems/database_error"`; it briefly reported the hyphenated
+       *     `/problems/database-error` while `code` stayed `database_error`.
+       */
       type: string;
+      /** @description Short Chinese summary, safe to display. */
       title: string;
       status: number;
-      code: string;
-      detail?: string;
-      fields?: {
+      /**
+       * @description Stable machine-readable failure code. This enum is the canonical list of every
+       *     value the server emits.
+       *
+       *     Request handling:
+       *     - `invalid_json` (400) — body missing, empty, not parseable JSON, or carrying
+       *       anything other than whitespace after the top-level value. Strictly a parse
+       *       failure, and `detail` never echoes the parser output or the body. A well-formed
+       *       body that does not match the schema is `validation_error` (422).
+       *     - `body_too_large` (413) — JSON body above 1 MiB. A body above the 4 MiB transport
+       *       ceiling is refused before any handler runs and returns a bare 413 with no body,
+       *       so no code at all; see the `PayloadTooLarge` response.
+       *     - `cross_site_write` (403) — write request with a non-same-origin `Sec-Fetch-Site`.
+       *     - `session_required`, `invalid_credentials` (401).
+       *     - `csrf_mismatch` (**403**, not 401) — the session is valid but the CSRF check
+       *       failed. Covers a wrong `X-JournalSeed-CSRF` value *and* a missing or empty
+       *       header; the missing-header case used to return 401 `session_required`.
+       *     - `setup_already_completed`, `function_conflict` (409).
+       *     - `duplicate_value` (409) — a value that has to be unique is already taken:
+       *       a ledger, account, or category name, or a wallet or address-label address.
+       *       Carries `fields` naming the offending input, and is logged no more loudly than a
+       *       404. Each of these used to be reported as 500 `database_error`.
+       *
+       *     Missing entities (404) — all of the form `<entity>_not_found`:
+       *     - `ledger_not_found` — creating an account, category, column, row, wallet, or
+       *       address label under a ledger id that does not exist or is archived.
+       *     - `row_not_found` — updating, recycling, or restoring a row that is not in the
+       *       required state.
+       *     - `column_not_found` — updating, recycling, or restoring a column; also when a
+       *       key in a row's `cells` names no column of that ledger. Recycling the system
+       *       amount column lands here too, because the database keeps it undeletable.
+       *     - `account_not_found` — a row's `accountId` or `transferAccountId` names no
+       *       active account of the row's ledger.
+       *     - `category_not_found` — a row's `categoryId` names no active category of the
+       *       row's ledger. A category that exists but whose `direction` contradicts the sign
+       *       of the amount is not this code; it is a 422 `validation_error` on
+       *       `fields.categoryId`.
+       *     - `job_not_found` — cancelling a job that does not exist or has already finished.
+       *     - `wallet_not_found`, `address_label_not_found`.
+       *
+       *     Ledger validation (422):
+       *     - `validation_error` — the general code; carries `fields`. Also covers schema
+       *       binding of a well-formed body, non-UUID path parameters, invalid or inverted
+       *       `from`/`to` dates, category-direction and account-membership errors, a transfer
+       *       across two assets (`fields.transferAccountId`), an amount whose precision
+       *       exceeds its asset's scale or the 18-place storage scale (`fields.amount`), and
+       *       a bad account `name` / `openingBalance` (`fields.name`,
+       *       `fields.openingBalance`).
+       *     - `invalid_amount` — the amount is not a parseable decimal at all: `abc`, `1.`,
+       *       `1.2.3`, `1e5`. Over-precision of either kind is no longer reported here.
+       *     - `invalid_kind`, `invalid_postings`, `invalid_transfer`.
+       *     - `invalid_sort`, `invalid_cursor` — bad `sort`/`cursor` query parameters.
+       *
+       *     Lua:
+       *     - `invalid_function_input`, `lua_input_depth`, `inexact_lua_number`,
+       *       `empty_lua_source`, `lua_script_error`, `lua_execution_error`,
+       *       `lua_limit_exceeded` (422).
+       *     - `function_missing` (404).
+       *     - `lua_write_error` (500) — the script directory could not be written.
+       *
+       *     Wallet synchronization:
+       *     - `unsupported_chain` (422) — the wallet's chain has no synchronization adapter.
+       *     - `rpc_endpoint_rejected` (422) — the provider endpoint failed the outbound egress
+       *       (SSRF) check; see the `RpcEndpointRejected` response.
+       *     - `wallet_sync_failed` (500) — synchronization threw. Replaces the `database_error`
+       *       this path used to return, because the failure is usually the upstream provider
+       *       rather than the database. `detail` is a fixed message plus a diagnostic
+       *       reference; the provider's own error text goes to the server log only, and the
+       *       recorded `wallet_sync` job stores the same redacted message.
+       *
+       *     Chain settings encryption (500):
+       *     - `chain_settings_key_unconfigured` — `JOURNALSEED_CHAIN_SETTINGS_KEY` unset or
+       *       too weak.
+       *     - `chain_settings_secret_undecryptable` — stored ciphertext does not open under
+       *       the current key.
+       *
+       *     Server:
+       *     - `database_error`, `password_hash_error` (500).
+       * @enum {string}
+       */
+      code:
+        | 'invalid_json'
+        | 'body_too_large'
+        | 'cross_site_write'
+        | 'session_required'
+        | 'invalid_credentials'
+        | 'csrf_mismatch'
+        | 'setup_already_completed'
+        | 'function_conflict'
+        | 'duplicate_value'
+        | 'validation_error'
+        | 'invalid_amount'
+        | 'invalid_kind'
+        | 'invalid_postings'
+        | 'invalid_transfer'
+        | 'invalid_sort'
+        | 'invalid_cursor'
+        | 'invalid_function_input'
+        | 'lua_input_depth'
+        | 'inexact_lua_number'
+        | 'empty_lua_source'
+        | 'lua_script_error'
+        | 'lua_execution_error'
+        | 'lua_limit_exceeded'
+        | 'lua_write_error'
+        | 'function_missing'
+        | 'ledger_not_found'
+        | 'account_not_found'
+        | 'category_not_found'
+        | 'column_not_found'
+        | 'row_not_found'
+        | 'job_not_found'
+        | 'wallet_not_found'
+        | 'address_label_not_found'
+        | 'unsupported_chain'
+        | 'rpc_endpoint_rejected'
+        | 'wallet_sync_failed'
+        | 'chain_settings_key_unconfigured'
+        | 'chain_settings_secret_undecryptable'
+        | 'database_error'
+        | 'password_hash_error';
+      /**
+       * @description Human-readable Chinese explanation. Never contains upstream provider output: for
+       *     failures that originate outside the process the server substitutes a fixed message
+       *     and a diagnostic reference that correlates with the server log.
+       */
+      detail: string;
+      /**
+       * @description Field name to message, for `validation_error` and `duplicate_value`. `{}` when not
+       *     applicable.
+       */
+      fields: {
         [key: string]: string;
       };
     };
   };
   responses: {
-    /** @description Session is absent or expired. */
+    /**
+     * @description The request body is missing, empty, or is not parseable JSON. Code: `invalid_json`.
+     *
+     *     This is strictly a parse failure. `detail` is a fixed message and never echoes the
+     *     parser's output or any part of the submitted body; the parser's reason and byte
+     *     offset go to the server log only.
+     *
+     *     **The whole body must be one JSON value.** Anything other than whitespace after the
+     *     top-level value — `{"name":"X"} trailing` — is a parse failure and lands here.
+     *     Such a body used to be accepted, the trailing bytes ignored, and the resource created.
+     *
+     *     A body that *is* well-formed JSON but does not match the operation's schema —
+     *     unknown field, wrong value type — is **not** reported here. It is
+     *     `validation_error` (422). The split is clean because the two run in that order: the
+     *     body is first parsed on its own, trailing content included, and only then bound to the
+     *     operation's schema, so a 422 can never be caused by a syntax problem.
+     */
+    MalformedJson: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        'application/problem+json': components['schemas']['Problem'];
+      };
+    };
+    /**
+     * @description No usable session. Codes: `session_required` (the session cookie is absent, unknown,
+     *     or expired) and `invalid_credentials` (`POST /auth/login` only).
+     *
+     *     `csrf_mismatch` is **403**, not 401 — including the case of a missing
+     *     `X-JournalSeed-CSRF` header. See `Forbidden`.
+     */
     Unauthorized: {
       headers: {
         [name: string]: unknown;
@@ -520,7 +1589,65 @@ export interface components {
         'application/problem+json': components['schemas']['Problem'];
       };
     };
-    /** @description Requested state conflicts with current state. */
+    /**
+     * @description The write was refused. Codes:
+     *
+     *     - `cross_site_write` — the request carried a `Sec-Fetch-Site` header whose value is
+     *       not `same-origin`. Checked before authentication, so it is returned even without a
+     *       session.
+     *     - `csrf_mismatch` — the session cookie is valid but the CSRF check failed. This
+     *       covers **both** a wrong `X-JournalSeed-CSRF` value and a missing or empty header;
+     *       a missing header used to be reported as 401 `session_required`, which made clients
+     *       treat it as an expired session and re-authenticate. Refresh the page — or re-read
+     *       `GET /auth/session`, which rotates and returns a fresh `csrfToken` — and retry.
+     */
+    Forbidden: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        'application/problem+json': components['schemas']['Problem'];
+      };
+    };
+    /**
+     * @description A referenced entity does not exist. Every code has the shape `<entity>_not_found`:
+     *     `ledger_not_found`, `account_not_found`, `category_not_found`, `column_not_found`,
+     *     `row_not_found`, `job_not_found`, `wallet_not_found`, `address_label_not_found`. The
+     *     Lua registry uses `function_missing` instead.
+     *
+     *     These are reported without a server-side ERROR log: a missing target is the caller's
+     *     problem, not a server fault. Which codes a given operation can produce is listed on
+     *     that operation.
+     */
+    NotFound: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        'application/problem+json': components['schemas']['Problem'];
+      };
+    };
+    /**
+     * @description Requested state conflicts with current state. Codes: `setup_already_completed`,
+     *     `function_conflict`, `duplicate_value`.
+     *
+     *     `duplicate_value` means the request reused a value that has to be unique. It always
+     *     carries a single-entry `fields` map naming the offending input, and — like 404 — it
+     *     is reported without a server-side ERROR log, because retyping an existing name is the
+     *     caller's problem and not a server fault. It covers:
+     *
+     *     - `createLedger` — `fields.name`, a ledger name already in use (case-insensitive,
+     *       among non-archived ledgers).
+     *     - `createAccount` — `fields.name`, an account name already in use in that ledger.
+     *     - `createCategory` — `fields.name`, a category name already in use in that ledger
+     *       *for the same `direction`*.
+     *     - `createWallet` — `fields.address`, the ledger already watches that address on that
+     *       chain.
+     *     - `createAddressLabel` — `fields.address`, the ledger already labels that address on
+     *       that chain.
+     *
+     *     All five previously reached a unique index and came back as 500 `database_error`.
+     */
     Conflict: {
       headers: {
         [name: string]: unknown;
@@ -529,8 +1656,145 @@ export interface components {
         'application/problem+json': components['schemas']['Problem'];
       };
     };
-    /** @description Request fields failed validation. */
+    /**
+     * @description The JSON request body exceeds 1 MiB. Code: `body_too_large`.
+     *
+     *     The 1 MiB rule belongs to the application and is reported as a normal problem
+     *     document. It is enforced under a second, higher transport ceiling of 4 MiB: bodies
+     *     above *that* are refused by the HTTP layer before any handler runs, and such a
+     *     response is a bare 413 with no body and no `Content-Type`. Clients must therefore
+     *     tolerate an empty 413 as well, even though every rejection at the documented 1 MiB
+     *     limit carries the problem document.
+     *
+     *     The two limits used to be the same value, which made the transport rejection the only
+     *     reachable one and `body_too_large` unemittable: every oversized body produced the bare
+     *     413.
+     */
+    PayloadTooLarge: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        'application/problem+json': components['schemas']['Problem'];
+      };
+    };
+    /**
+     * @description The request was well formed but its content was rejected.
+     *
+     *     `validation_error` is the general code and always carries a `fields` map naming the
+     *     offending input where one can be named. It covers:
+     *
+     *     - field-level rules on the request body (lengths, ranges, enums);
+     *     - a well-formed JSON body that does not match the operation's schema — unknown field
+     *       or wrong value type. This used to be reported as `invalid_json` (400);
+     *     - a path parameter declared `format: uuid` that is not a UUID, with the parameter
+     *       name in `fields`;
+     *     - `from` / `to` on `getLedgerSummary` that are not valid calendar dates, or are
+     *       inverted;
+     *     - a `categoryId` whose direction contradicts the sign of `amount`, on both `createRow`
+     *       and `updateRow` (an account or category that is archived or belongs to another
+     *       ledger is a 404 `account_not_found` / `category_not_found` instead);
+     *     - a `transfer` whose `accountId` and `transferAccountId` are denominated in different
+     *       assets, with `fields.transferAccountId` set, on both `createRow` and `updateRow`.
+     *       This used to reach the database and return 500;
+     *     - an `amount` that cannot be represented at its asset's scale, with `fields.amount`
+     *       set — whether it exceeds the asset's scale or the 18-place storage scale. The test
+     *       is on the value, not on the digit count: trailing zeros past the scale are accepted
+     *       and normalized away. Both used to be reported as `invalid_amount` (the latter with
+     *       an empty `fields`), and before that the excess precision was silently stored;
+     *     - an `openingBalance` on `createAccount` that is over-precise or unparseable, and a
+     *       bad account `name`, with `fields.openingBalance` / `fields.name` set.
+     *
+     *     More specific codes remain for cases where naming a field adds nothing:
+     *     `invalid_amount` (the amount is not a parseable decimal at all), `invalid_kind`,
+     *     `invalid_postings`, `invalid_transfer`, `invalid_sort`, `invalid_cursor`,
+     *     `unsupported_chain`.
+     */
     ValidationError: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        'application/problem+json': components['schemas']['Problem'];
+      };
+    };
+    /**
+     * @description The synchronization request was refused before any provider call (422). Either
+     *     `unsupported_chain`, when the wallet's chain has no synchronization adapter,
+     *     `validation_error`, when `walletId` is not a UUID, or `rpc_endpoint_rejected`,
+     *     described below.
+     *
+     *     `rpc_endpoint_rejected` means the chain RPC endpoint that this operation would have
+     *     contacted failed the outbound egress check, so no request was made.
+     *
+     *     The server resolves the endpoint host at call time and refuses loopback, RFC1918,
+     *     carrier-grade NAT, link-local (including the cloud metadata address), benchmark,
+     *     multicast, and reserved addresses, in both IPv4 and IPv6 including the IPv4-in-IPv6
+     *     encodings. URLs with embedded credentials, non-`http(s)` schemes, control characters,
+     *     and invalid ports are rejected before resolution. `detail` names the endpoint and the
+     *     fixed rejection reason; it never echoes upstream content.
+     *
+     *     The check is re-run on every synchronization, so an endpoint that was accepted when it
+     *     was saved can still be rejected later if DNS starts resolving it into a private range.
+     *     Operators who deliberately run a node on a private address must allowlist its hostname
+     *     through the `JOURNALSEED_RPC_ALLOW_HOSTS` process environment variable; that escape
+     *     hatch is not reachable through this API by design.
+     */
+    RpcEndpointRejected: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        'application/problem+json': components['schemas']['Problem'];
+      };
+    };
+    /**
+     * @description The stored chain credentials could not be encrypted or decrypted (500).
+     *
+     *     - `chain_settings_key_unconfigured` — `JOURNALSEED_CHAIN_SETTINGS_KEY` is unset or too
+     *       weak to derive a key from. `detail` states which of the two it is.
+     *     - `chain_settings_secret_undecryptable` — a stored ciphertext did not open under the
+     *       key currently in the environment. This is expected after rotating the key, and after
+     *       upgrading from a build that derived the key with bare BLAKE2b; the operator must
+     *       re-enter and save the chain settings once. The server reports this instead of
+     *       silently falling back to unauthenticated provider calls.
+     */
+    ChainSettingsKeyUnavailable: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        'application/problem+json': components['schemas']['Problem'];
+      };
+    };
+    /**
+     * @description Synchronization did not complete (500). One of:
+     *
+     *     - `wallet_sync_failed` — the synchronization run threw. This code replaced the generic
+     *       `database_error` that this path previously returned. `detail` is a fixed Chinese
+     *       message plus a diagnostic reference; the underlying exception (which may be verbatim
+     *       upstream RPC output) is written to the server log only, and the `wallet_sync` job
+     *       recorded with status `failed` stores the same redacted message in its `error`.
+     *     - `chain_settings_key_unconfigured` — the provider credential could not be decrypted
+     *       because `JOURNALSEED_CHAIN_SETTINGS_KEY` is unset or too weak.
+     *     - `chain_settings_secret_undecryptable` — the stored credential did not open under the
+     *       current key. See the `ChainSettingsKeyUnavailable` response.
+     */
+    WalletSyncFailure: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        'application/problem+json': components['schemas']['Problem'];
+      };
+    };
+    /**
+     * @description Unexpected server-side failure. Codes: `database_error`, `password_hash_error`, and
+     *     `lua_write_error` on the function operations. `detail` carries only a fixed message
+     *     plus a diagnostic reference; the underlying exception text is written to the server
+     *     log only.
+     */
+    ServerError: {
       headers: {
         [name: string]: unknown;
       };
@@ -544,6 +1808,8 @@ export interface components {
     LedgerId: string;
     RowId: string;
     ColumnId: string;
+    WalletId: string;
+    AddressLabelId: string;
   };
   requestBodies: never;
   headers: never;
@@ -569,6 +1835,7 @@ export interface operations {
           'application/json': components['schemas']['SetupStatus'];
         };
       };
+      500: components['responses']['ServerError'];
     };
   };
   createAdministrator: {
@@ -594,8 +1861,24 @@ export interface operations {
           'application/json': components['schemas']['Session'];
         };
       };
+      400: components['responses']['MalformedJson'];
+      /**
+       * @description The request carried a `Sec-Fetch-Site` header that is not `same-origin`. Code:
+       *     `cross_site_write`. This operation has no session yet, so `csrf_mismatch` is not
+       *     reachable here.
+       */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
       409: components['responses']['Conflict'];
+      413: components['responses']['PayloadTooLarge'];
       422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   getSession: {
@@ -607,7 +1890,10 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Current session. */
+      /**
+       * @description Current session. Reading the session rotates `csrfToken`, so the value returned
+       *     here supersedes any token held from an earlier call.
+       */
       200: {
         headers: {
           [name: string]: unknown;
@@ -617,6 +1903,7 @@ export interface operations {
         };
       };
       401: components['responses']['Unauthorized'];
+      500: components['responses']['ServerError'];
     };
   };
   login: {
@@ -641,7 +1928,24 @@ export interface operations {
           'application/json': components['schemas']['Session'];
         };
       };
+      400: components['responses']['MalformedJson'];
       401: components['responses']['Unauthorized'];
+      /**
+       * @description The request carried a `Sec-Fetch-Site` header that is not `same-origin`. Code:
+       *     `cross_site_write`. This operation has no session yet, so `csrf_mismatch` is not
+       *     reachable here.
+       */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      413: components['responses']['PayloadTooLarge'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   logout: {
@@ -663,6 +1967,8 @@ export interface operations {
         content?: never;
       };
       401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      500: components['responses']['ServerError'];
     };
   };
   listLedgers: {
@@ -683,6 +1989,8 @@ export interface operations {
           'application/json': components['schemas']['Ledger'][];
         };
       };
+      401: components['responses']['Unauthorized'];
+      500: components['responses']['ServerError'];
     };
   };
   createLedger: {
@@ -711,13 +2019,28 @@ export interface operations {
           'application/json': components['schemas']['Ledger'];
         };
       };
+      400: components['responses']['MalformedJson'];
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      409: components['responses']['Conflict'];
+      413: components['responses']['PayloadTooLarge'];
       422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   getLedgerSummary: {
     parameters: {
       query?: {
+        /**
+         * @description Inclusive lower bound on `journal_rows.occurred_on`, applied to the flow figures
+         *     only. Omit or send an empty string to leave the period open on the left.
+         */
         from?: string;
+        /**
+         * @description Inclusive upper bound on `journal_rows.occurred_on`, applied to both the flow
+         *     figures and the closing `balance`. Omit or send an empty string to leave the
+         *     period open on the right.
+         */
         to?: string;
       };
       header?: never;
@@ -728,7 +2051,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Balance and entry-only period totals. */
+      /** @description Per-asset balances, entry-only period flows, and the ledger-wide row count. */
       200: {
         headers: {
           [name: string]: unknown;
@@ -737,11 +2060,20 @@ export interface operations {
           'application/json': components['schemas']['LedgerSummary'];
         };
       };
+      401: components['responses']['Unauthorized'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   listAccounts: {
     parameters: {
       query?: {
+        /**
+         * @deprecated
+         * @description **Accepted and ignored.** The server does not read this parameter; archived
+         *     accounts are always included, and each carries `archived: true`. Filter
+         *     client-side on `archived`.
+         */
         includeArchived?: boolean;
       };
       header?: never;
@@ -761,6 +2093,9 @@ export interface operations {
           'application/json': components['schemas']['Account'][];
         };
       };
+      401: components['responses']['Unauthorized'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   createAccount: {
@@ -789,11 +2124,32 @@ export interface operations {
           'application/json': components['schemas']['Account'];
         };
       };
+      400: components['responses']['MalformedJson'];
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      /** @description The ledger does not exist or is archived. Code: `ledger_not_found`. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      409: components['responses']['Conflict'];
+      413: components['responses']['PayloadTooLarge'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   listCategories: {
     parameters: {
       query?: {
+        /**
+         * @deprecated
+         * @description **Accepted and ignored**, exactly as on `listAccounts`. Archived categories are
+         *     always included and carry `archived: true`.
+         */
         includeArchived?: boolean;
       };
       header?: never;
@@ -813,6 +2169,9 @@ export interface operations {
           'application/json': components['schemas']['Category'][];
         };
       };
+      401: components['responses']['Unauthorized'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   createCategory: {
@@ -841,11 +2200,31 @@ export interface operations {
           'application/json': components['schemas']['Category'];
         };
       };
+      400: components['responses']['MalformedJson'];
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      /** @description The ledger does not exist or is archived. Code: `ledger_not_found`. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      409: components['responses']['Conflict'];
+      413: components['responses']['PayloadTooLarge'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   listColumns: {
     parameters: {
       query?: {
+        /**
+         * @description `true` returns the recycled columns instead of the active ones. Compared
+         *     case-sensitively against the literal `true`; any other value means `false`.
+         */
         recycled?: boolean;
       };
       header?: never;
@@ -865,6 +2244,9 @@ export interface operations {
           'application/json': components['schemas']['Column'][];
         };
       };
+      401: components['responses']['Unauthorized'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   createColumn: {
@@ -893,16 +2275,44 @@ export interface operations {
           'application/json': components['schemas']['Column'];
         };
       };
+      400: components['responses']['MalformedJson'];
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      /** @description The ledger does not exist or is archived. Code: `ledger_not_found`. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      413: components['responses']['PayloadTooLarge'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   listRows: {
     parameters: {
       query?: {
         cursor?: string;
+        /**
+         * @description **Coerced, never rejected.** A value outside 1–250 is clamped into that range, and
+         *     a value that is not a whole number falls back to `100`. Neither case is an error.
+         */
         limit?: number;
         sort?: string;
-        /** @description URL-encoded JSON array of AND-combined typed filters. */
+        /**
+         * @deprecated
+         * @description **Not implemented.** The server never reads this parameter; sending it has no
+         *     effect and produces no error. Reserved for the planned server-side combined
+         *     filters.
+         */
         filter?: string;
+        /**
+         * @description `true` returns recycled rows instead of active ones. Compared case-sensitively
+         *     against the literal `true`; any other value means `false`.
+         */
         recycled?: boolean;
       };
       header?: never;
@@ -922,6 +2332,21 @@ export interface operations {
           'application/json': components['schemas']['RowPage'];
         };
       };
+      401: components['responses']['Unauthorized'];
+      /**
+       * @description Codes: `validation_error` (malformed `ledgerId`), `invalid_sort` (`sort` is not
+       *     `date`/`amount` paired with `asc`/`desc`), `invalid_cursor` (`cursor` is not
+       *     decodable, or was issued for a different sort order).
+       */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      500: components['responses']['ServerError'];
     };
   };
   createRow: {
@@ -950,7 +2375,25 @@ export interface operations {
           'application/json': components['schemas']['JournalRow'];
         };
       };
+      400: components['responses']['MalformedJson'];
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      /**
+       * @description Codes: `ledger_not_found`; `account_not_found` and `category_not_found` when
+       *     `accountId`, `transferAccountId` or `categoryId` names no active entity of this
+       *     ledger; `column_not_found` when a key in `cells` names no column of this ledger.
+       */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      413: components['responses']['PayloadTooLarge'];
       422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   recycleRow: {
@@ -973,6 +2416,22 @@ export interface operations {
         };
         content?: never;
       };
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      /**
+       * @description No active row has this id — it does not exist, or it is already recycled. Code:
+       *     `row_not_found`.
+       */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   updateRow: {
@@ -1001,6 +2460,30 @@ export interface operations {
           'application/json': components['schemas']['JournalRow'];
         };
       };
+      400: components['responses']['MalformedJson'];
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      /**
+       * @description Codes: `row_not_found`; `account_not_found` when `accountId` or
+       *     `transferAccountId` names no active account of the row's ledger;
+       *     `category_not_found` when `categoryId` names no active category of that ledger;
+       *     `column_not_found` when a key in `cells` names no column of that ledger.
+       *
+       *     This operation receives no ledger id, so it cannot run the pre-write ownership
+       *     checks `createRow` does; cross-ledger and archived references therefore surface
+       *     here as 404 rather than as a field-scoped 422.
+       */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      413: components['responses']['PayloadTooLarge'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   restoreRow: {
@@ -1023,6 +2506,22 @@ export interface operations {
         };
         content?: never;
       };
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      /**
+       * @description No recycled row has this id — it does not exist, or it is not in the recycle
+       *     bin. Code: `row_not_found`.
+       */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   recycleColumn: {
@@ -1045,7 +2544,22 @@ export interface operations {
         };
         content?: never;
       };
-      409: components['responses']['Conflict'];
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      /**
+       * @description No recyclable active column has this id — it does not exist, it is already
+       *     recycled, or it is the system amount column. Code: `column_not_found`.
+       */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   updateColumn: {
@@ -1074,6 +2588,21 @@ export interface operations {
           'application/json': components['schemas']['Column'];
         };
       };
+      400: components['responses']['MalformedJson'];
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      /** @description No active column has this id. Code: `column_not_found`. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      413: components['responses']['PayloadTooLarge'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   restoreColumn: {
@@ -1096,6 +2625,22 @@ export interface operations {
         };
         content?: never;
       };
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      /**
+       * @description No recycled column has this id — it does not exist, or it is not in the recycle
+       *     bin. Code: `column_not_found`.
+       */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   listFunctions: {
@@ -1116,6 +2661,7 @@ export interface operations {
           'application/json': components['schemas']['LuaFunction'][];
         };
       };
+      401: components['responses']['Unauthorized'];
     };
   };
   createFunction: {
@@ -1142,7 +2688,13 @@ export interface operations {
           'application/json': components['schemas']['LuaFunction'];
         };
       };
+      400: components['responses']['MalformedJson'];
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
       409: components['responses']['Conflict'];
+      413: components['responses']['PayloadTooLarge'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   updateFunction: {
@@ -1171,7 +2723,14 @@ export interface operations {
           'application/json': components['schemas']['LuaFunction'];
         };
       };
+      400: components['responses']['MalformedJson'];
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      404: components['responses']['NotFound'];
       409: components['responses']['Conflict'];
+      413: components['responses']['PayloadTooLarge'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   invokeFunction: {
@@ -1204,6 +2763,25 @@ export interface operations {
           };
         };
       };
+      400: components['responses']['MalformedJson'];
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      404: components['responses']['NotFound'];
+      413: components['responses']['PayloadTooLarge'];
+      /**
+       * @description Codes: `invalid_function_input` (the body is valid JSON but not a JSON object),
+       *     `lua_input_depth` (arguments nested more than 8 levels deep),
+       *     `inexact_lua_number` (a JSON number was supplied where an exact decimal string is
+       *     required), `lua_script_error`, `lua_execution_error`, `lua_limit_exceeded`.
+       */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
     };
   };
   listJobs: {
@@ -1224,6 +2802,8 @@ export interface operations {
           'application/json': components['schemas']['Job'][];
         };
       };
+      401: components['responses']['Unauthorized'];
+      500: components['responses']['ServerError'];
     };
   };
   cancelJob: {
@@ -1240,12 +2820,447 @@ export interface operations {
     requestBody?: never;
     responses: {
       /** @description Cancellation requested. */
-      202: {
+      204: {
         headers: {
           [name: string]: unknown;
         };
         content?: never;
       };
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      /**
+       * @description No cancellable job has this id — it does not exist, or it has already reached a
+       *     terminal status. Code: `job_not_found`.
+       */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
+    };
+  };
+  getChainSettings: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /**
+       * @description Global chain-provider configuration. Provider API keys and custom RPC URL secrets
+       *     are never returned, and this operation never decrypts them, so it cannot fail with
+       *     a chain-settings key error.
+       */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ChainSettings'];
+        };
+      };
+      401: components['responses']['Unauthorized'];
+      500: components['responses']['ServerError'];
+    };
+  };
+  updateChainSettings: {
+    parameters: {
+      query?: never;
+      header: {
+        'X-JournalSeed-CSRF': components['parameters']['CsrfHeader'];
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ChainSettingsPatch'];
+      };
+    };
+    responses: {
+      /** @description Updated global chain-provider configuration. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ChainSettings'];
+        };
+      };
+      400: components['responses']['MalformedJson'];
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      413: components['responses']['PayloadTooLarge'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ChainSettingsKeyUnavailable'];
+    };
+  };
+  listWallets: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        ledgerId: components['parameters']['LedgerId'];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Watch-only wallets in the ledger. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['Wallet'][];
+        };
+      };
+      401: components['responses']['Unauthorized'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
+    };
+  };
+  createWallet: {
+    parameters: {
+      query?: never;
+      header: {
+        'X-JournalSeed-CSRF': components['parameters']['CsrfHeader'];
+      };
+      path: {
+        ledgerId: components['parameters']['LedgerId'];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['WalletInput'];
+      };
+    };
+    responses: {
+      /** @description Created watch-only wallet for TRON, Ethereum, Polygon, or Solana Mainnet. */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['Wallet'];
+        };
+      };
+      400: components['responses']['MalformedJson'];
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      /** @description The ledger does not exist or is archived. Code: `ledger_not_found`. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      409: components['responses']['Conflict'];
+      413: components['responses']['PayloadTooLarge'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
+    };
+  };
+  deleteWallet: {
+    parameters: {
+      query?: never;
+      header: {
+        'X-JournalSeed-CSRF': components['parameters']['CsrfHeader'];
+      };
+      path: {
+        walletId: components['parameters']['WalletId'];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Wallet removed from the active wallet list. */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      /** @description No wallet has this id. Code: `wallet_not_found`. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
+    };
+  };
+  updateWallet: {
+    parameters: {
+      query?: never;
+      header: {
+        'X-JournalSeed-CSRF': components['parameters']['CsrfHeader'];
+      };
+      path: {
+        walletId: components['parameters']['WalletId'];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['WalletPatch'];
+      };
+    };
+    responses: {
+      /** @description Updated wallet settings. A wallet address cannot be changed. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['Wallet'];
+        };
+      };
+      400: components['responses']['MalformedJson'];
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      /** @description No wallet has this id. Code: `wallet_not_found`. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      413: components['responses']['PayloadTooLarge'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
+    };
+  };
+  syncWallet: {
+    parameters: {
+      query?: never;
+      header: {
+        'X-JournalSeed-CSRF': components['parameters']['CsrfHeader'];
+      };
+      path: {
+        walletId: components['parameters']['WalletId'];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /**
+       * @description Synchronization pass completed. The counters report what this pass actually
+       *     persisted; see `SyncResult` for how each one is counted.
+       */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SyncResult'];
+        };
+      };
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      404: components['responses']['NotFound'];
+      422: components['responses']['RpcEndpointRejected'];
+      500: components['responses']['WalletSyncFailure'];
+    };
+  };
+  listChainTransactions: {
+    parameters: {
+      query?: {
+        /**
+         * @description Clamped and defaulted exactly as on `listRows`: out-of-range values are clamped
+         *     into 1–250 and non-numeric values fall back to `100`, with no error either way.
+         */
+        limit?: number;
+      };
+      header?: never;
+      path: {
+        ledgerId: components['parameters']['LedgerId'];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /**
+       * @description Recent asset movements discovered for the ledger's wallets, newest first, one item
+       *     per movement. Populated by wallet synchronization; empty until a wallet in this
+       *     ledger has been synchronized.
+       */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ChainTransaction'][];
+        };
+      };
+      401: components['responses']['Unauthorized'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
+    };
+  };
+  listAddressLabels: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        ledgerId: components['parameters']['LedgerId'];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Address labels used when presenting chain transaction counterparties. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['AddressLabel'][];
+        };
+      };
+      401: components['responses']['Unauthorized'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
+    };
+  };
+  createAddressLabel: {
+    parameters: {
+      query?: never;
+      header: {
+        'X-JournalSeed-CSRF': components['parameters']['CsrfHeader'];
+      };
+      path: {
+        ledgerId: components['parameters']['LedgerId'];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AddressLabelInput'];
+      };
+    };
+    responses: {
+      /** @description Created address label. */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['AddressLabel'];
+        };
+      };
+      400: components['responses']['MalformedJson'];
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      /** @description The ledger does not exist or is archived. Code: `ledger_not_found`. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      409: components['responses']['Conflict'];
+      413: components['responses']['PayloadTooLarge'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
+    };
+  };
+  deleteAddressLabel: {
+    parameters: {
+      query?: never;
+      header: {
+        'X-JournalSeed-CSRF': components['parameters']['CsrfHeader'];
+      };
+      path: {
+        labelId: components['parameters']['AddressLabelId'];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Address label deleted. */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      /** @description No address label has this id. Code: `address_label_not_found`. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
+    };
+  };
+  updateAddressLabel: {
+    parameters: {
+      query?: never;
+      header: {
+        'X-JournalSeed-CSRF': components['parameters']['CsrfHeader'];
+      };
+      path: {
+        labelId: components['parameters']['AddressLabelId'];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AddressLabelPatch'];
+      };
+    };
+    responses: {
+      /** @description Updated address label. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['AddressLabel'];
+        };
+      };
+      400: components['responses']['MalformedJson'];
+      401: components['responses']['Unauthorized'];
+      403: components['responses']['Forbidden'];
+      /** @description No address label has this id. Code: `address_label_not_found`. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
+      413: components['responses']['PayloadTooLarge'];
+      422: components['responses']['ValidationError'];
+      500: components['responses']['ServerError'];
     };
   };
   streamEvents: {
@@ -1266,6 +3281,7 @@ export interface operations {
           'text/event-stream': string;
         };
       };
+      401: components['responses']['Unauthorized'];
     };
   };
 }
