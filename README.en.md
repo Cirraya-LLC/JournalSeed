@@ -357,6 +357,35 @@ The Functions page includes an in-product custom-function tutorial covering the
 `name`/`version`/`description`/`params`/`run` structure, exact-number handling with `dec()`,
 preview results, save validation, and a “use tutorial example” editable Lua template.
 
+### Known gaps
+
+The following are confirmed and unfixed. They are not "planned phases" but the boundaries of what
+currently ships, listed here so that reserved structures in the API and the migrations are not
+mistaken for finished capabilities.
+
+1. **The shared `evm` scope for address labels is unreachable.** The database and the repository both
+   support `scope='evm'` (one label covering Ethereum and Polygon), and migration `0003` created
+   `wallet_address_labels_evm_unique` for it, but the service layer's chain validation accepts only the
+   four concrete chain codes and rejects `evm` with a 422, so the path can never be taken. The same `0x`
+   address must currently be labelled separately on each chain. There are two candidate fixes — add
+   `evm` to the `AddressLabel.chain` enum, or add a column recording the originating chain — and since
+   they trade off differently, neither was chosen unilaterally.
+2. **Request bodies above 4 MiB return a 413 with no body.** The application limit is 1 MiB, and
+   exceeding it returns the documented `body_too_large` problem detail; but anything above 4 MiB is
+   rejected by Drogon at the transport layer, which cannot attach a JSON body. Requests between the two
+   behave as documented.
+3. **The chain-settings key cannot be rotated.** `chain_settings` has no key-version column and the
+   ciphertext carries no version tag, so changing `JOURNALSEED_CHAIN_SETTINGS_KEY` leaves every stored
+   secret undecryptable. The current behaviour is an explicit `chain_settings_secret_undecryptable`
+   (500) telling the operator to re-enter them, rather than a silent downgrade to anonymous calls. Real
+   rotation needs a migration adding `key_version` plus a re-encryption pass.
+4. **Incremental fetching is not wired up.** Checkpoints are written but never read — see
+   "Multi-chain wallet synchronization".
+5. **Some paths have no automated verification.** Real chain RPC fetches and their failure paths (only
+   the offline `JOURNALSEED_MOCK_CHAIN_SYNC=1` route is covered), the race between a user edit and a
+   concurrent sync of the same movement, CSV import/export, and the Lua script write paths are all
+   outside the automated tests.
+
 ### Roadmap
 
 The following work remains in the planned phases. Reserved tables in migrations and reserved API shapes
