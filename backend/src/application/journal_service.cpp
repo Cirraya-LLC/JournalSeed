@@ -257,8 +257,8 @@ bool is_address_label_kind(std::string_view kind) {
 //
 // 首选形态是运维直接提供 32 字节随机密钥（十六进制或 Base64），此时完全不经过 KDF。
 // 只有在给出口令时才退回 Argon2id；口令至少 16 个字符，避免数据库被拖走后用 GPU
-// 直接离线爆破。数据库里没有 salt / key_version 列（见交付报告），因此口令派生必须
-// 是确定性的，这里使用固定的应用级 salt。
+// 直接离线爆破。数据库里没有 salt / key_version 列（见 README「已知缺口」一节：密钥
+// 目前无法轮换），因此口令派生必须是确定性的，这里使用固定的应用级 salt。
 constexpr std::size_t kChainSettingsKeyBytes = crypto_secretbox_KEYBYTES;
 constexpr std::size_t kMinimumPassphraseBytes = 16;
 constexpr unsigned char kChainSettingsKdfSalt[crypto_pwhash_SALTBYTES] = {
