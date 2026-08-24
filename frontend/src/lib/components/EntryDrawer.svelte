@@ -9,7 +9,7 @@
     Trash2
   } from 'lucide-svelte';
   import Drawer from './Drawer.svelte';
-  import { errorMessage, normalizeMoneyInput, today } from '$lib/format';
+  import { errorMessage, moneyScale, normalizeMoneyInput, today } from '$lib/format';
   import type {
     Account,
     AddressLabelKind,
@@ -45,19 +45,23 @@
   $: direction = amount.trim().startsWith('-') ? 'expense' : 'income';
   $: visibleCategories = categories.filter((category) => category.direction === direction);
   $: customColumns = columns.filter((column) => !column.system && column.type !== 'formula');
-  $: if (kind === 'note') amount = '0.00';
+  $: amountScale = moneyScale(row?.assetDecimals);
+  $: amountHint = amountScale === 0 ? '整数金额' : `最多 ${amountScale} 位小数`;
+  $: noteZero = amountScale === 0 ? '0' : `0.${'0'.repeat(amountScale)}`;
+  $: if (kind === 'note') amount = noteZero;
 
   function selectKind(next: RowKind): void {
     kind = next;
     error = '';
-    if (next === 'note') amount = '0.00';
+    if (next === 'note') amount = noteZero;
     if (next === 'transfer' && amount.startsWith('-')) amount = amount.slice(1);
   }
 
   async function submit(): Promise<void> {
     error = '';
     try {
-      const normalizedAmount = kind === 'note' ? '0.00' : normalizeMoneyInput(amount);
+      const normalizedAmount =
+        kind === 'note' ? noteZero : normalizeMoneyInput(amount, amountScale);
       if (kind === 'transfer' && normalizedAmount.startsWith('-')) {
         throw new Error('转账金额需要填写正数');
       }
@@ -198,9 +202,13 @@
             bind:value={amount}
             disabled={kind === 'note'}
             placeholder={kind === 'entry' ? '-48.50 / 1250' : '500.00'}
+            aria-describedby="entry-amount-scale"
             required
           />
         </div>
+        <small id="entry-amount-scale"
+          >{amountHint}{row?.assetSymbol ? ` · ${row.assetSymbol}` : ''}</small
+        >
       </div>
     </div>
 
@@ -464,6 +472,11 @@
   .amount-field.expense > div > :global(svg),
   .amount-field.expense .input {
     color: var(--expense);
+  }
+
+  .amount-field small {
+    color: var(--ink-muted);
+    font-size: 0.75rem;
   }
 
   .custom-fields {

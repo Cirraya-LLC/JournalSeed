@@ -349,6 +349,18 @@ std::vector<ChainTransactionInput> parse_response(std::string_view body,
     return result;
 }
 
+std::optional<std::string> response_fingerprint(std::string_view body) {
+    Generic root;
+    if (glz::read_json(root, body)) return std::nullopt;
+    const auto meta = member(root, "meta");
+    if (!meta) return std::nullopt;
+    auto fingerprint = string_member(*meta, "fingerprint");
+    if (!fingerprint || fingerprint->empty()) return std::nullopt;
+    return fingerprint;
+}
+
+constexpr int kMaxResumePages = 8;
+
 }  // namespace
 
 TronAdapter::TronAdapter(TronAdapterOptions options) : options_(std::move(options)) {
@@ -375,16 +387,38 @@ drogon::Task<std::string> TronAdapter::get(std::string path) const {
 }
 
 drogon::Task<std::vector<ChainTransactionInput>>
-TronAdapter::fetch_wallet_transactions(std::string_view normalized_address) const {
-    const std::string address(normalized_address);
+TronAdapter::fetch_account_pages(std::string_view address, bool trc20,
+                                 const ChainFetchCursor &cursor) const {
     const auto limit = std::to_string(options_.limit);
-    const auto native_path = "/v1/accounts/" + address +
-        "/transactions?only_confirmed=true&limit=" + limit + "&order_by=block_timestamp,desc";
-    const auto trc20_path = "/v1/accounts/" + address +
-        "/transactions/trc20?only_confirmed=true&limit=" + limit + "&order_by=block_timestamp,desc";
+    std::string path = "/v1/accounts/" + std::string(address) +
+        (trc20 ? "/transactions/trc20" : "/transactions") +
+        "?only_confirmed=true&limit=" + limit + "&order_by=block_timestamp,desc";
+    if (cursor.timestampMs && *cursor.timestampMs > 0) {
+        path += "&min_timestamp=" + std::to_string(*cursor.timestampMs);
+    }
+    const int max_pages = cursor.timestampMs ? kMaxResumePages : 1;
+    std::vector<ChainTransactionInput> output;
+    std::optional<std::string> fingerprint;
+    for (int page = 0; page < max_pages; ++page) {
+        auto page_path = path;
+        if (fingerprint) page_path += "&fingerprint=" + *fingerprint;
+        const auto body = co_await get(page_path);
+        auto parsed = parse_response(body, address, trc20);
+        if (parsed.empty()) break;
+        output.insert(output.end(), parsed.begin(), parsed.end());
+        fingerprint = response_fingerprint(body);
+        if (!fingerprint || !cursor.timestampMs) break;
+        if (parsed.size() < options_.limit) break;
+    }
+    co_return output;
+}
 
-    auto native = parse_response(co_await get(native_path), address, false);
-    auto trc20 = parse_response(co_await get(trc20_path), address, true);
+drogon::Task<std::vector<ChainTransactionInput>>
+TronAdapter::fetch_wallet_transactions(std::string_view normalized_address,
+                                       const ChainFetchCursor &cursor) const {
+    const std::string address(normalized_address);
+    auto native = co_await fetch_account_pages(address, false, cursor);
+    auto trc20 = co_await fetch_account_pages(address, true, cursor);
     native.reserve(native.size() + trc20.size());
     for (auto &transaction : trc20) native.push_back(std::move(transaction));
     co_return native;

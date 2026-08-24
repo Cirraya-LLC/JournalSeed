@@ -159,3 +159,36 @@ return {
     REQUIRE_FALSE(result.has_value());
     REQUIRE(result.error().code == journalseed::lua::RegistryErrorCode::limit_exceeded);
 }
+
+TEST_CASE("Lua registry rejects bytecode payloads") {
+    TemporaryDirectory scripts;
+    journalseed::lua::FunctionRegistry registry({.directory = scripts.path()});
+    std::string bytecode;
+    bytecode.push_back('\x1b');
+    bytecode += "Lua\x54\x00fake-bytecode";
+    const auto created = registry.create(bytecode);
+    REQUIRE_FALSE(created.has_value());
+    REQUIRE(created.error().code == journalseed::lua::RegistryErrorCode::script_error);
+    REQUIRE(created.error().message.find("字节码") != std::string::npos);
+}
+
+TEST_CASE("Lua registry interrupts top-level chunks that exceed the instruction budget") {
+    TemporaryDirectory scripts;
+    journalseed::lua::FunctionRegistry registry({
+        .directory = scripts.path(),
+        .instruction_limit = 10'000,
+        .wall_time_limit = std::chrono::milliseconds(100),
+    });
+    const auto created = registry.create(R"LUA(
+while true do end
+return {
+  name = "never",
+  version = "1.0.0",
+  description = "should not load",
+  params = {},
+  run = function() end
+}
+)LUA");
+    REQUIRE_FALSE(created.has_value());
+    REQUIRE(created.error().code == journalseed::lua::RegistryErrorCode::limit_exceeded);
+}

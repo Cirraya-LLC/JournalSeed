@@ -26,6 +26,7 @@ compile_commands.json
 /config.local.json
 /data/
 /bench-data/
+/uploads/
 *.log
 
 # Editors and operating systems

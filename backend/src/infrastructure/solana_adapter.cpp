@@ -403,7 +403,8 @@ drogon::Task<std::string> SolanaAdapter::post(std::string body, double timeout_s
 }
 
 drogon::Task<std::vector<ChainTransactionInput>>
-SolanaAdapter::fetch_wallet_transactions(std::string_view normalized_address) const {
+SolanaAdapter::fetch_wallet_transactions(std::string_view normalized_address,
+                                         const ChainFetchCursor &cursor) const {
     const std::string address(normalized_address);
     // 整轮抓取的墙钟预算：慢速或恶意端点最多消耗这么久，之后返回已取得的部分结果，
     // 而不是让 HTTP 请求和自动同步调度器一起挂起。
@@ -414,34 +415,61 @@ SolanaAdapter::fetch_wallet_transactions(std::string_view normalized_address) co
         return std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count();
     };
 
-    const std::string signatures_body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSignaturesForAddress\",\"params\":[\"" +
-        json_escape(address) + "\",{\"limit\":" + std::to_string(options_.limit) + ",\"commitment\":\"finalized\"}]}";
-    const auto signatures_root = parse_json(
-        co_await post(signatures_body, std::min(options_.requestTimeoutSeconds, remaining_seconds())));
-    const auto signatures = result_member(signatures_root);
-    if (!signatures || !signatures->holds<Array>()) co_return std::vector<ChainTransactionInput>{};
-
+    const bool resume = cursor.signature && !cursor.signature->empty();
+    const int max_pages = resume ? 8 : 1;
     std::vector<ChainTransactionInput> output;
-    for (const auto &item : signatures->get<Array>()) {
+    std::optional<std::string> before;
+    for (int page = 0; page < max_pages; ++page) {
         const auto left = remaining_seconds();
         if (left <= 0.0) {
             LOG_WARN << "Solana 同步超出 " << options_.fetchBudgetSeconds
                      << " 秒预算，返回部分结果：已解析 " << output.size() << " 笔交易";
             break;
         }
-        if (const auto err = member(item, "err"); err && !err->holds<glz::generic::null_t>()) continue;
-        const auto signature = string_member(item, "signature");
-        if (!signature || signature->empty()) continue;
-        const std::string transaction_body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getTransaction\",\"params\":[\"" +
-            json_escape(*signature) + "\",{\"encoding\":\"jsonParsed\",\"commitment\":\"finalized\",\"maxSupportedTransactionVersion\":0}]}";
-        const auto transaction_json =
-            co_await post(transaction_body, std::min(options_.requestTimeoutSeconds, left));
-        const auto numbers = parse_transaction_numbers(transaction_json).value_or(SolanaTransactionNumbers{});
-        const auto transaction_root = parse_json(transaction_json);
-        const auto transaction = result_member(transaction_root);
-        if (!transaction || transaction->holds<glz::generic::null_t>()) continue;
-        auto parsed = parse_transaction_result(*transaction, numbers, *signature, address);
-        if (parsed && !parsed->movements.empty()) output.push_back(std::move(*parsed));
+        std::string options_json = "{\"limit\":" + std::to_string(options_.limit) +
+            ",\"commitment\":\"finalized\"";
+        if (resume) {
+            options_json += ",\"until\":\"" + json_escape(*cursor.signature) + "\"";
+        }
+        if (before) {
+            options_json += ",\"before\":\"" + json_escape(*before) + "\"";
+        }
+        options_json += "}";
+        const std::string signatures_body =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSignaturesForAddress\",\"params\":[\"" +
+            json_escape(address) + "\"," + options_json + "]}";
+        const auto signatures_root = parse_json(
+            co_await post(signatures_body, std::min(options_.requestTimeoutSeconds, left)));
+        const auto signatures = result_member(signatures_root);
+        if (!signatures || !signatures->holds<Array>() || signatures->get<Array>().empty()) break;
+
+        std::optional<std::string> oldest;
+        std::size_t seen = 0;
+        for (const auto &item : signatures->get<Array>()) {
+            const auto remaining = remaining_seconds();
+            if (remaining <= 0.0) {
+                LOG_WARN << "Solana 同步超出 " << options_.fetchBudgetSeconds
+                         << " 秒预算，返回部分结果：已解析 " << output.size() << " 笔交易";
+                co_return output;
+            }
+            ++seen;
+            if (const auto err = member(item, "err"); err && !err->holds<glz::generic::null_t>()) continue;
+            const auto signature = string_member(item, "signature");
+            if (!signature || signature->empty()) continue;
+            oldest = *signature;
+            const std::string transaction_body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getTransaction\",\"params\":[\"" +
+                json_escape(*signature) + "\",{\"encoding\":\"jsonParsed\",\"commitment\":\"finalized\",\"maxSupportedTransactionVersion\":0}]}";
+            const auto transaction_json =
+                co_await post(transaction_body, std::min(options_.requestTimeoutSeconds, remaining));
+            const auto numbers = parse_transaction_numbers(transaction_json).value_or(SolanaTransactionNumbers{});
+            const auto transaction_root = parse_json(transaction_json);
+            const auto transaction = result_member(transaction_root);
+            if (!transaction || transaction->holds<glz::generic::null_t>()) continue;
+            auto parsed = parse_transaction_result(*transaction, numbers, *signature, address);
+            if (parsed && !parsed->movements.empty()) output.push_back(std::move(*parsed));
+        }
+        if (!resume || !oldest || seen < options_.limit) break;
+        before = std::move(oldest);
     }
     co_return output;
 }

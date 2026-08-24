@@ -1774,6 +1774,73 @@ drogon::Task<std::optional<application::WalletView>> PostgresRepository::wallet(
     co_return wallet_from_row(rows[0]);
 }
 
+drogon::Task<ChainFetchCursor> PostgresRepository::wallet_sync_cursor(
+    std::string_view wallet_public_id) const {
+    const auto rows = co_await client_->execSqlCoro(R"SQL(
+SELECT s.checkpoint_block,
+       CASE WHEN s.checkpoint_timestamp IS NULL THEN NULL
+            ELSE (EXTRACT(EPOCH FROM s.checkpoint_timestamp) * 1000)::bigint
+       END AS checkpoint_timestamp_ms,
+       s.checkpoint_signature
+  FROM wallet_accounts w
+  LEFT JOIN wallet_sync_states s ON s.wallet_id = w.id
+ WHERE w.public_id = $1::uuid AND w.deleted_at IS NULL
+)SQL", std::string(wallet_public_id));
+    if (rows.empty()) throw application::EntityNotFound("wallet");
+    ChainFetchCursor cursor;
+    const auto &row = rows.front();
+    if (!row["checkpoint_block"].isNull()) {
+        cursor.block = row["checkpoint_block"].as<std::int64_t>();
+    }
+    if (!row["checkpoint_timestamp_ms"].isNull()) {
+        cursor.timestampMs = row["checkpoint_timestamp_ms"].as<std::int64_t>();
+    }
+    if (!row["checkpoint_signature"].isNull()) {
+        cursor.signature = row["checkpoint_signature"].as<std::string>();
+    }
+    co_return cursor;
+}
+
+drogon::Task<bool> PostgresRepository::try_begin_wallet_sync(
+    std::string_view wallet_public_id) const {
+    const auto claimed = co_await client_->execSqlCoro(R"SQL(
+INSERT INTO wallet_sync_states (wallet_id, status, last_started_at, last_error)
+SELECT w.id, 'running', clock_timestamp(), NULL
+  FROM wallet_accounts w
+ WHERE w.public_id = $1::uuid AND w.deleted_at IS NULL
+ON CONFLICT (wallet_id) DO UPDATE
+   SET status = 'running',
+       last_started_at = clock_timestamp(),
+       last_error = NULL
+ WHERE wallet_sync_states.status IN ('idle', 'failed')
+RETURNING wallet_id
+)SQL", std::string(wallet_public_id));
+    if (!claimed.empty()) co_return true;
+    const auto exists = co_await client_->execSqlCoro(R"SQL(
+SELECT 1 FROM wallet_accounts WHERE public_id = $1::uuid AND deleted_at IS NULL
+)SQL", std::string(wallet_public_id));
+    if (exists.empty()) throw application::EntityNotFound("wallet");
+    co_return false;
+}
+
+drogon::Task<> PostgresRepository::fail_wallet_sync(
+    std::string_view wallet_public_id, std::string_view error) const {
+    co_await client_->execSqlCoro(R"SQL(
+UPDATE wallet_accounts
+   SET last_error = $2
+ WHERE public_id = $1::uuid AND deleted_at IS NULL
+)SQL", std::string(wallet_public_id), std::string(error));
+    co_await client_->execSqlCoro(R"SQL(
+UPDATE wallet_sync_states s
+   SET status = 'failed',
+       last_error = $2,
+       last_completed_at = clock_timestamp()
+  FROM wallet_accounts w
+ WHERE w.public_id = $1::uuid AND s.wallet_id = w.id AND s.status = 'running'
+)SQL", std::string(wallet_public_id), std::string(error));
+    co_return;
+}
+
 drogon::Task<SyncWriteStats> PostgresRepository::record_wallet_sync(
     std::string_view wallet_public_id,
     std::int64_t user_id,
