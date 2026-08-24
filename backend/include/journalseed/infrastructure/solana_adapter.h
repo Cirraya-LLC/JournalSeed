@@ -26,7 +26,8 @@ class SolanaAdapter final {
     explicit SolanaAdapter(SolanaAdapterOptions options = {});
 
     [[nodiscard]] drogon::Task<std::vector<ChainTransactionInput>>
-    fetch_wallet_transactions(std::string_view normalized_address) const;
+    fetch_wallet_transactions(std::string_view normalized_address,
+                              const ChainFetchCursor &cursor = {}) const;
 
   private:
     [[nodiscard]] drogon::Task<std::string> post(std::string body, double timeout_seconds) const;

@@ -11,7 +11,6 @@
     ListFilter,
     LogOut,
     Menu,
-    MoreHorizontal,
     Plus,
     RefreshCw,
     Search,
@@ -548,8 +547,14 @@
         </div>
       </div>
       <div class="topbar-status"><i></i><span>已连接</span></div>
-      <button class="icon-button more-button" type="button" aria-label="更多" title="更多">
-        <MoreHorizontal size={20} />
+      <button
+        class="icon-button more-button"
+        type="button"
+        aria-label="刷新"
+        title="刷新"
+        on:click={() => loadLedger()}
+      >
+        <RefreshCw size={20} />
       </button>
     </header>
 
@@ -600,7 +605,11 @@
             <div class="search-box">
               <Search size={17} />
               <label class="sr-only" for="row-search">搜索流水</label>
-              <input id="row-search" bind:value={search} placeholder="搜索说明、账户或分类" />
+              <input
+                id="row-search"
+                bind:value={search}
+                placeholder="搜索已载入的说明、账户或分类"
+              />
               {#if search}<button type="button" aria-label="清除搜索" on:click={() => (search = '')}
                   ><X size={15} /></button
                 >{/if}
@@ -627,12 +636,16 @@
             rows={visibleRows}
             {loading}
             {sort}
+            searching={Boolean(normalizedSearch)}
+            {hasMore}
+            {loadingMore}
             onSort={changeSort}
             onSelect={openEntry}
             onCreate={openNewEntry}
+            onLoadMore={loadMore}
           />
 
-          {#if hasMore && !search}
+          {#if hasMore}
             <div class="load-more-row">
               <button class="button" type="button" disabled={loadingMore} on:click={loadMore}>
                 <RefreshCw class={loadingMore ? 'spinning' : ''} size={16} />{loadingMore

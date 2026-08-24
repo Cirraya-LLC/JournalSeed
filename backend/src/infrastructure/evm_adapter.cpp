@@ -363,16 +363,36 @@ drogon::Task<std::string> EvmAdapter::get(std::string query) const {
 }
 
 drogon::Task<std::vector<ChainTransactionInput>>
-EvmAdapter::fetch_wallet_transactions(std::string_view normalized_address) const {
-    const std::string address(normalized_address);
-    const std::string base_query = "chainid=" + std::to_string(options_.chainId) +
-        "&module=account&address=" + address + "&page=1&offset=" + std::to_string(options_.limit) +
-        "&sort=desc";
+EvmAdapter::fetch_action_pages(std::string_view address, std::string_view action,
+                               const ChainFetchCursor &cursor) const {
     const std::string api_key = options_.apiKey && !options_.apiKey->empty()
         ? "&apikey=" + *options_.apiKey : std::string{};
+    const bool resume = cursor.block && *cursor.block > 0;
+    const std::string sort = resume ? "asc" : "desc";
+    std::string shared = "chainid=" + std::to_string(options_.chainId) +
+        "&module=account&address=" + std::string(address) +
+        "&offset=" + std::to_string(options_.limit) + "&sort=" + sort +
+        "&action=" + std::string(action) + api_key;
+    if (resume) shared += "&startblock=" + std::to_string(*cursor.block);
+    const int max_pages = resume ? 8 : 1;
+    std::vector<ChainTransactionInput> output;
+    for (int page = 1; page <= max_pages; ++page) {
+        auto parsed = parse_response(
+            co_await get(shared + "&page=" + std::to_string(page)), address, options_,
+            action == "tokentx");
+        if (parsed.empty()) break;
+        output.insert(output.end(), parsed.begin(), parsed.end());
+        if (!resume || parsed.size() < options_.limit) break;
+    }
+    co_return output;
+}
 
-    auto native = parse_response(co_await get(base_query + "&action=txlist" + api_key), address, options_, false);
-    auto tokens = parse_response(co_await get(base_query + "&action=tokentx" + api_key), address, options_, true);
+drogon::Task<std::vector<ChainTransactionInput>>
+EvmAdapter::fetch_wallet_transactions(std::string_view normalized_address,
+                                      const ChainFetchCursor &cursor) const {
+    const std::string address(normalized_address);
+    auto native = co_await fetch_action_pages(address, "txlist", cursor);
+    auto tokens = co_await fetch_action_pages(address, "tokentx", cursor);
     native.reserve(native.size() + tokens.size());
     for (auto &tx : tokens) native.push_back(std::move(tx));
     co_return native;

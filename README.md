@@ -34,8 +34,7 @@ JournalSeed 是一个中文优先、单管理员的网页账本。前端使用 S
 事务里写入链交易、资产、每个资产的钱包账户与结转账户、资产流水，以及自动生成的流水行和
 分录，并推进 `wallet_sync_states` 的检查点。同步接口返回的三个计数是真实写入量，链交易
 视图也能读到数据；流水读取查询也会通过 `chain_movement_row_links` 回填
-`JournalRow.chainSource`。这一块仍未完成的是增量取数：检查点只写不读，每次同步都重新
-拉取最近一批交易。
+`JournalRow.chainSource`。首次同步仍拉最近一批交易；之后会读取检查点做增量续拉。
 
 ### 前置条件
 
@@ -183,7 +182,7 @@ openssl rand -hex 32
 
 三个计数是真实值：`transactionsSeen` 是本次写入或刷新的链交易条数，`movementsCreated` 是本次新插入的资产流水条数（重复同步同一窗口为 `0`），`rowsCreated` 是本次新生成并链接的流水行数（含 `internal` 的零金额备注行）。
 
-检查点：同步成功后 `wallet_sync_states` 置回 `idle`，`checkpoint_block` 与 `checkpoint_timestamp` 只增不减（空窗口保持原值），`checkpoint_signature` 取本窗口最新一笔交易的哈希，供 Solana 按签名而不是区块高度续拉，且只有该交易的时间不早于已存检查点时间时才替换。不过当前取数路径还没有读取这些检查点：每次同步都重新拉取最近一批交易（TRON 与 EVM 各 100 条、Solana 50 条），增量续拉尚未接上。
+检查点：同步成功后 `wallet_sync_states` 置回 `idle`，`checkpoint_block` 与 `checkpoint_timestamp` 只增不减（空窗口保持原值），`checkpoint_signature` 取本窗口最新一笔交易的哈希，供 Solana 按签名而不是区块高度续拉，且只有该交易的时间不早于已存检查点时间时才替换。首次同步仍拉最近一批（TRON 与 EVM 各 100 条、Solana 50 条）；之后取数会读这些检查点，按 `min_timestamp` / `startblock` / `until` 续拉，最多再翻 8 页。同一钱包在 `running` 时会拒绝并发同步。
 
 链上来源双向可读：流水读取查询会顺着 `chain_movement_row_links` 回填 `JournalRow.chainSource`，所以同步生成的流水行带有该字段，手工录入的普通流水行没有——字段是否存在可以直接当作「这行来自钱包同步」的判据；反向的 `ChainTransaction.rowId` 同样有值。
 
@@ -192,8 +191,8 @@ openssl rand -hex 32
 ### 验证
 
 ```sh
-# C++ 单元测试（当前 25 项）
-ctest --test-dir build/server-check --output-on-failure
+# C++ 单元测试
+ctest --preset conan-debug --output-on-failure
 
 # 前端类型检查、单元测试、格式检查和生产构建
 pnpm --dir frontend check

@@ -17,9 +17,20 @@
   export let columns: Column[];
   export let loading = false;
   export let sort = 'date:desc';
+  export let searching = false;
+  export let hasMore = false;
+  export let loadingMore = false;
   export let onSort: (sort: string) => void;
   export let onSelect: (row: JournalRow) => void;
   export let onCreate: () => void;
+  export let onLoadMore: (() => void) | null = null;
+
+  function activateRow(row: JournalRow, event: KeyboardEvent): void {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      onSelect(row);
+    }
+  }
 
   $: orderedColumns = [...columns].sort((left, right) => left.position - right.position);
 
@@ -112,7 +123,10 @@
               class:expense={row.kind === 'entry' && isNegative(row.amount)}
               class:note={row.kind === 'note'}
               class:transfer={row.kind === 'transfer'}
+              tabindex="0"
+              aria-label={`编辑 ${row.description || row.date}`}
               on:click={() => onSelect(row)}
+              on:keydown={(event) => activateRow(row, event)}
             >
               <td class="type-cell">
                 <span
@@ -223,11 +237,21 @@
   {#if !loading && rows.length === 0}
     <div class="empty-state">
       <div><FileText size={24} /></div>
-      <strong>还没有流水</strong>
-      <span>第一笔记录会出现在这里。</span>
-      <button class="button primary" type="button" on:click={onCreate}
-        ><Plus size={17} />新增流水</button
-      >
+      {#if searching}
+        <strong>没有匹配的流水</strong>
+        <span>搜索只覆盖已经载入的记录。可以先载入更多，或改一下关键词。</span>
+        {#if hasMore && onLoadMore}
+          <button class="button" type="button" disabled={loadingMore} on:click={onLoadMore}
+            >{loadingMore ? '正在载入' : '载入更多'}</button
+          >
+        {/if}
+      {:else}
+        <strong>还没有流水</strong>
+        <span>第一笔收入、支出或转账会出现在这里。</span>
+        <button class="button primary" type="button" on:click={onCreate}
+          ><Plus size={17} />新增流水</button
+        >
+      {/if}
     </div>
   {/if}
 </div>
@@ -321,6 +345,7 @@
   tbody tr:focus-visible {
     outline: 2px solid var(--focus);
     outline-offset: -2px;
+    background: var(--accent-soft);
   }
 
   .type-cell {
@@ -473,13 +498,17 @@
     }
   }
 
+  tbody tr:focus-within .action-cell button,
+  .action-cell button:focus-visible {
+    opacity: 1;
+  }
+
   @media (hover: hover) {
     tbody tr:hover {
       background: var(--surface-subtle);
     }
 
-    tbody tr:hover .action-cell button,
-    .action-cell button:focus-visible {
+    tbody tr:hover .action-cell button {
       opacity: 1;
     }
 

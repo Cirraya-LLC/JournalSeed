@@ -22,10 +22,14 @@ class TronAdapter final {
     explicit TronAdapter(TronAdapterOptions options = {});
 
     [[nodiscard]] drogon::Task<std::vector<ChainTransactionInput>>
-    fetch_wallet_transactions(std::string_view normalized_address) const;
+    fetch_wallet_transactions(std::string_view normalized_address,
+                              const ChainFetchCursor &cursor = {}) const;
 
   private:
     [[nodiscard]] drogon::Task<std::string> get(std::string path) const;
+    [[nodiscard]] drogon::Task<std::vector<ChainTransactionInput>>
+    fetch_account_pages(std::string_view address, bool trc20,
+                        const ChainFetchCursor &cursor) const;
 
     TronAdapterOptions options_;
 };

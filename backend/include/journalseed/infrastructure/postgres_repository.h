@@ -162,6 +162,15 @@ struct ChainTransactionInput {
     std::vector<ChainAssetMovementInput> movements;
 };
 
+// Resume cursor written by record_wallet_sync. An empty cursor means first sync:
+// adapters keep the "latest N" window. Subsequent passes pass these fields so
+// fetch can continue from the last persisted height / time / signature.
+struct ChainFetchCursor {
+    std::optional<std::int64_t> block;
+    std::optional<std::int64_t> timestampMs;
+    std::optional<std::string> signature;
+};
+
 // An asset together with the scale every amount denominated in it must fit and is
 // rendered at. `symbol` only feeds user-facing wording (e.g. the cross-asset transfer
 // rejection), never a lookup key.
@@ -269,6 +278,14 @@ class PostgresRepository final {
     [[nodiscard]] drogon::Task<> delete_wallet(std::string_view wallet_public_id) const;
     [[nodiscard]] drogon::Task<std::optional<application::WalletView>>
     wallet(std::string_view wallet_public_id) const;
+    [[nodiscard]] drogon::Task<ChainFetchCursor>
+    wallet_sync_cursor(std::string_view wallet_public_id) const;
+    // Commits status='running' before any RPC. Returns false if another sync
+    // already holds the row. Throws EntityNotFound when the wallet is missing.
+    [[nodiscard]] drogon::Task<bool>
+    try_begin_wallet_sync(std::string_view wallet_public_id) const;
+    [[nodiscard]] drogon::Task<>
+    fail_wallet_sync(std::string_view wallet_public_id, std::string_view error) const;
     [[nodiscard]] drogon::Task<SyncWriteStats> record_wallet_sync(
         std::string_view wallet_public_id, std::int64_t user_id,
         const std::vector<ChainTransactionInput> &transactions) const;

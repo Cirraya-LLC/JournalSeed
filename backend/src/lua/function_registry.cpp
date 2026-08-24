@@ -7,8 +7,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <fstream>
+#include <string_view>
 #include <iomanip>
 #include <limits>
 #include <mutex>
@@ -37,6 +39,23 @@ void instruction_hook(lua_State *state, lua_Debug *) {
     if (std::chrono::steady_clock::now() >= execution_deadline) {
         luaL_error(state, "wall-clock limit exceeded");
     }
+}
+
+struct LuaLimitGuard {
+    lua_State *state;
+    LuaLimitGuard(lua_State *state, std::uint64_t instructions, std::chrono::milliseconds wall)
+        : state(state) {
+        remaining_instructions = instructions;
+        execution_deadline = std::chrono::steady_clock::now() + wall;
+        lua_sethook(state, instruction_hook, LUA_MASKCOUNT, 1'000);
+    }
+    ~LuaLimitGuard() { lua_sethook(state, nullptr, 0, 0); }
+    LuaLimitGuard(const LuaLimitGuard &) = delete;
+    LuaLimitGuard &operator=(const LuaLimitGuard &) = delete;
+};
+
+bool is_lua_bytecode(std::string_view source) {
+    return !source.empty() && static_cast<unsigned char>(source.front()) == 0x1b;
 }
 
 RegistryError registry_error(RegistryErrorCode code,
@@ -340,8 +359,15 @@ std::expected<FunctionEntry, RegistryError> parse_definition(
     return function;
 }
 
-std::expected<FunctionMetadata, RegistryError> inspect_source(std::string_view source,
-                                                              const std::string &script_name) {
+std::expected<FunctionMetadata, RegistryError> inspect_source(
+    std::string_view source,
+    const std::string &script_name,
+    std::uint64_t instruction_limit,
+    std::chrono::milliseconds wall_time_limit) {
+    if (is_lua_bytecode(source)) {
+        return std::unexpected(registry_error(
+            RegistryErrorCode::script_error, "拒绝 Lua 字节码，仅接受文本脚本", script_name));
+    }
     auto state = make_sandbox_state();
     sol::load_result loaded = state->load(std::string(source), script_name);
     if (!loaded.valid()) {
@@ -350,11 +376,15 @@ std::expected<FunctionMetadata, RegistryError> inspect_source(std::string_view s
             RegistryErrorCode::script_error, load_error.what(), script_name));
     }
     sol::protected_function chunk = loaded;
+    LuaLimitGuard guard(state->lua_state(), instruction_limit, wall_time_limit);
     sol::protected_function_result executed = chunk();
     if (!executed.valid()) {
         const sol::error execution_error = executed;
-        return std::unexpected(registry_error(
-            RegistryErrorCode::script_error, execution_error.what(), script_name));
+        const std::string message = execution_error.what();
+        const auto code = message.find("limit exceeded") != std::string::npos
+                              ? RegistryErrorCode::limit_exceeded
+                              : RegistryErrorCode::script_error;
+        return std::unexpected(registry_error(code, message, script_name));
     }
     auto parsed = parse_definition(executed, script_name, std::string(source));
     if (!parsed) return std::unexpected(parsed.error());
@@ -408,18 +438,26 @@ std::expected<std::size_t, RegistryError> FunctionRegistry::reload_unlocked() {
         const std::string script_name = script.filename().string();
         auto source = read_file(script, script_name);
         if (!source) return std::unexpected(source.error());
-        sol::load_result loaded = state.load_file(script.string());
+        if (is_lua_bytecode(*source)) {
+            return std::unexpected(registry_error(
+                RegistryErrorCode::script_error, "拒绝 Lua 字节码，仅接受文本脚本", script_name));
+        }
+        sol::load_result loaded = state.load(*source, script_name);
         if (!loaded.valid()) {
             const sol::error load_error = loaded;
             return std::unexpected(registry_error(
                 RegistryErrorCode::script_error, load_error.what(), script_name));
         }
         sol::protected_function chunk = loaded;
+        LuaLimitGuard guard(state.lua_state(), options_.instruction_limit, options_.wall_time_limit);
         sol::protected_function_result executed = chunk();
         if (!executed.valid()) {
             const sol::error execution_error = executed;
-            return std::unexpected(registry_error(
-                RegistryErrorCode::script_error, execution_error.what(), script_name));
+            const std::string message = execution_error.what();
+            const auto code = message.find("limit exceeded") != std::string::npos
+                                  ? RegistryErrorCode::limit_exceeded
+                                  : RegistryErrorCode::script_error;
+            return std::unexpected(registry_error(code, message, script_name));
         }
         auto parsed = parse_definition(executed, script_name, std::move(*source));
         if (!parsed) return std::unexpected(parsed.error());
@@ -451,7 +489,8 @@ std::vector<FunctionMetadata> FunctionRegistry::list() const {
 
 std::expected<FunctionMetadata, RegistryError> FunctionRegistry::create(std::string source) {
     std::scoped_lock lock(update_mutex_);
-    auto metadata = inspect_source(source, "new_function.lua");
+    auto metadata = inspect_source(
+        source, "new_function.lua", options_.instruction_limit, options_.wall_time_limit);
     if (!metadata) return std::unexpected(metadata.error());
 
     const auto snapshot = std::atomic_load_explicit(&registry_, std::memory_order_acquire);
@@ -509,7 +548,8 @@ FunctionRegistry::update(std::string_view name, std::string source) {
         old_source = existing->second.metadata.source;
     }
 
-    auto metadata = inspect_source(source, old_script);
+    auto metadata = inspect_source(
+        source, old_script, options_.instruction_limit, options_.wall_time_limit);
     if (!metadata) return std::unexpected(metadata.error());
     if (metadata->name != name && snapshot->functions.contains(metadata->name)) {
         return std::unexpected(registry_error(
@@ -582,11 +622,8 @@ FunctionRegistry::invoke(std::string_view name, const LuaValue::Object &paramete
         input[key] = to_sol_object(state, value);
     }
 
-    remaining_instructions = options_.instruction_limit;
-    execution_deadline = std::chrono::steady_clock::now() + options_.wall_time_limit;
-    lua_sethook(state.lua_state(), instruction_hook, LUA_MASKCOUNT, 1'000);
+    LuaLimitGuard guard(state.lua_state(), options_.instruction_limit, options_.wall_time_limit);
     sol::protected_function_result execution = function->second.run(input);
-    lua_sethook(state.lua_state(), nullptr, 0, 0);
 
     if (!execution.valid()) {
         const sol::error execution_error = execution;

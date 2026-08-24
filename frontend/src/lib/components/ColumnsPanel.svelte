@@ -33,8 +33,6 @@
     { value: 'number', label: '数字' },
     { value: 'date', label: '日期' },
     { value: 'boolean', label: '复选框' },
-    { value: 'option', label: '单选' },
-    { value: 'relation', label: '关联' },
     { value: 'formula', label: '公式' }
   ];
 
@@ -265,6 +263,7 @@
               bind:value={formulaSource}
               placeholder={'return sum({ field = "金额", where = { op = "gt", value = dec("0") } })'}
             ></textarea>
+            <small class="field-hint">表达式会保存，计算结果尚未自动填入单元格。</small>
           </div>
         {/if}
         {#if error}<p class="field-error" role="alert">{error}</p>{/if}
@@ -454,6 +453,20 @@
     min-height: 116px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.8125rem;
+  }
+
+  .field-hint,
+  .field-error {
+    margin: 0;
+    font-size: 0.75rem;
+  }
+
+  .field-hint {
+    color: var(--ink-muted);
+  }
+
+  .field-error {
+    color: var(--expense);
   }
 
   .create-button {

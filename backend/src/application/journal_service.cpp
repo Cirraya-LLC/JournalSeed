@@ -21,15 +21,72 @@
 #include <array>
 #include <cctype>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <cstdlib>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <utility>
 
 namespace journalseed::application {
 namespace {
+
+std::mutex password_hash_mutex;
+
+bool verify_password_hash(const char *hash, std::string_view password) {
+    std::lock_guard lock(password_hash_mutex);
+    return crypto_pwhash_str_verify(hash, password.data(), password.size()) == 0;
+}
+
+const char *dummy_password_hash() {
+    static const std::string stored = [] {
+        std::array<char, crypto_pwhash_STRBYTES> out{};
+        constexpr char dummy[] = "journalseed-dummy";
+        if (crypto_pwhash_str_alg(out.data(), dummy, sizeof(dummy) - 1,
+                                  crypto_pwhash_OPSLIMIT_INTERACTIVE,
+                                  crypto_pwhash_MEMLIMIT_INTERACTIVE,
+                                  crypto_pwhash_ALG_ARGON2ID13) != 0) {
+            return std::string{};
+        }
+        return std::string(out.data());
+    }();
+    return stored.c_str();
+}
+
+constexpr int kLoginMaxFailures = 8;
+constexpr auto kLoginWindow = std::chrono::seconds(60);
+
+struct LoginAttemptWindow {
+    std::chrono::steady_clock::time_point start{std::chrono::steady_clock::now()};
+    int failures{0};
+};
+
+std::mutex login_attempt_mutex;
+std::map<std::string, LoginAttemptWindow> login_attempts;
+
+bool login_throttled(const std::string &username) {
+    std::lock_guard lock(login_attempt_mutex);
+    const auto now = std::chrono::steady_clock::now();
+    auto &window = login_attempts[username];
+    if (now - window.start >= kLoginWindow) window = LoginAttemptWindow{now, 0};
+    return window.failures >= kLoginMaxFailures;
+}
+
+void record_login_failure(const std::string &username) {
+    std::lock_guard lock(login_attempt_mutex);
+    const auto now = std::chrono::steady_clock::now();
+    auto &window = login_attempts[username];
+    if (now - window.start >= kLoginWindow) window = LoginAttemptWindow{now, 0};
+    ++window.failures;
+}
+
+void clear_login_failures(const std::string &username) {
+    std::lock_guard lock(login_attempt_mutex);
+    login_attempts.erase(username);
+}
 
 std::string trimmed(std::string value) {
     const auto first = std::find_if_not(value.begin(), value.end(), [](unsigned char character) {
@@ -787,10 +844,15 @@ JournalService::setup(SetupRequest input) const {
     }
 
     std::array<char, crypto_pwhash_STRBYTES> password_hash{};
-    if (crypto_pwhash_str_alg(password_hash.data(), input.password.data(), input.password.size(),
-                             crypto_pwhash_OPSLIMIT_INTERACTIVE,
-                             crypto_pwhash_MEMLIMIT_INTERACTIVE,
-                             crypto_pwhash_ALG_ARGON2ID13) != 0) {
+    int hash_status = 0;
+    {
+        std::lock_guard lock(password_hash_mutex);
+        hash_status = crypto_pwhash_str_alg(
+            password_hash.data(), input.password.data(), input.password.size(),
+            crypto_pwhash_OPSLIMIT_INTERACTIVE, crypto_pwhash_MEMLIMIT_INTERACTIVE,
+            crypto_pwhash_ALG_ARGON2ID13);
+    }
+    if (hash_status != 0) {
         co_return std::unexpected(problem(500, "password_hash_error", "管理员创建失败",
                                           "密码哈希所需内存分配失败"));
     }
@@ -817,13 +879,24 @@ JournalService::setup(SetupRequest input) const {
 drogon::Task<ServiceResult<SessionEnvelope>>
 JournalService::login(LoginRequest input) const {
     input.username = trimmed(std::move(input.username));
+    if (login_throttled(input.username)) {
+        co_return std::unexpected(problem(429, "login_rate_limited", "登录尝试过于频繁",
+                                          "请稍后再试"));
+    }
     try {
         const auto user = co_await repository_->find_user(input.username);
-        if (!user || crypto_pwhash_str_verify(user->passwordHash.c_str(), input.password.data(),
-                                             input.password.size()) != 0) {
+        if (!user) {
+            verify_password_hash(dummy_password_hash(), input.password);
+            record_login_failure(input.username);
             co_return std::unexpected(problem(401, "invalid_credentials", "登录信息不匹配",
                                               "请检查管理员名称和密码"));
         }
+        if (!verify_password_hash(user->passwordHash.c_str(), input.password)) {
+            record_login_failure(input.username);
+            co_return std::unexpected(problem(401, "invalid_credentials", "登录信息不匹配",
+                                              "请检查管理员名称和密码"));
+        }
+        clear_login_failures(input.username);
         if (crypto_pwhash_str_needs_rehash(user->passwordHash.c_str(),
                                           crypto_pwhash_OPSLIMIT_INTERACTIVE,
                                           crypto_pwhash_MEMLIMIT_INTERACTIVE) != 0) {
@@ -1587,9 +1660,24 @@ drogon::Task<ServiceResult<std::monostate>> JournalService::delete_wallet(std::s
 drogon::Task<ServiceResult<SyncResultView>>
 JournalService::sync_wallet(std::string_view wallet_id, std::int64_t user_id) const {
     std::optional<std::string> failure_detail;
+    bool claimed = false;
+    auto release_running = [this, wallet_id](std::string_view detail) -> drogon::Task<> {
+        try {
+            co_await repository_->fail_wallet_sync(wallet_id, detail);
+        } catch (...) {
+        }
+        co_return;
+    };
     try {
         const auto target = co_await repository_->wallet(wallet_id);
         if (!target) co_return std::unexpected(not_found_problem("wallet"));
+        claimed = co_await repository_->try_begin_wallet_sync(wallet_id);
+        if (!claimed) {
+            co_return std::unexpected(problem(
+                409, "wallet_sync_in_progress", "钱包正在同步",
+                "该钱包已有一次同步在进行中，请稍后再试"));
+        }
+        const auto cursor = co_await repository_->wallet_sync_cursor(wallet_id);
         infrastructure::SyncWriteStats stats;
         const bool mock_all = [] {
             if (const char *mock = std::getenv("JOURNALSEED_MOCK_CHAIN_SYNC")) return std::string_view(mock) == "1";
@@ -1609,26 +1697,36 @@ JournalService::sync_wallet(std::string_view wallet_id, std::int64_t user_id) co
             std::vector<infrastructure::ChainTransactionInput> transactions;
             if (target->chain == "tron-mainnet") {
                 auto api_key = decrypt_secret(secret.tronGridApiKey);
-                if (!api_key) co_return std::unexpected(api_key.error());
+                if (!api_key) {
+                    co_await release_running(api_key.error().detail);
+                    co_return std::unexpected(api_key.error());
+                }
                 if (const auto rejection = egress_rejection(settings.tronGridEndpoint)) {
-                    co_return std::unexpected(rpc_endpoint_problem("TronGrid", *rejection));
+                    auto issue = rpc_endpoint_problem("TronGrid", *rejection);
+                    co_await release_running(issue.detail);
+                    co_return std::unexpected(std::move(issue));
                 }
                 infrastructure::TronAdapter adapter(infrastructure::TronAdapterOptions{
                     .baseUrl = settings.tronGridEndpoint,
                     .apiKey = std::move(*api_key),
                     .limit = 100,
                 });
-                transactions = co_await adapter.fetch_wallet_transactions(target->address);
+                transactions = co_await adapter.fetch_wallet_transactions(target->address, cursor);
             } else if (target->chain == "ethereum-mainnet" || target->chain == "polygon-mainnet") {
                 auto api_key = decrypt_secret(secret.etherscanApiKey);
-                if (!api_key) co_return std::unexpected(api_key.error());
+                if (!api_key) {
+                    co_await release_running(api_key.error().detail);
+                    co_return std::unexpected(api_key.error());
+                }
                 const bool polygon = target->chain == "polygon-mainnet";
                 const char *base = std::getenv("JOURNALSEED_ETHERSCAN_BASE_URL");
                 const std::string base_url = base && *base
                     ? std::string(base)
                     : std::string("https://api.etherscan.io");
                 if (const auto rejection = egress_rejection(base_url)) {
-                    co_return std::unexpected(rpc_endpoint_problem("Etherscan", *rejection));
+                    auto issue = rpc_endpoint_problem("Etherscan", *rejection);
+                    co_await release_running(issue.detail);
+                    co_return std::unexpected(std::move(issue));
                 }
                 infrastructure::EvmAdapter adapter(infrastructure::EvmAdapterOptions{
                     .baseUrl = base_url,
@@ -1639,10 +1737,13 @@ JournalService::sync_wallet(std::string_view wallet_id, std::int64_t user_id) co
                     .nativeName = polygon ? "Polygon Ecosystem Token" : "Ether",
                     .limit = 100,
                 });
-                transactions = co_await adapter.fetch_wallet_transactions(target->address);
+                transactions = co_await adapter.fetch_wallet_transactions(target->address, cursor);
             } else if (target->chain == "solana-mainnet") {
                 auto configured_rpc = decrypt_secret(secret.solanaRpcUrl);
-                if (!configured_rpc) co_return std::unexpected(configured_rpc.error());
+                if (!configured_rpc) {
+                    co_await release_running(configured_rpc.error().detail);
+                    co_return std::unexpected(configured_rpc.error());
+                }
                 const char *solana_env = std::getenv("JOURNALSEED_SOLANA_RPC_URL");
                 const std::string default_rpc = solana_env && *solana_env
                     ? std::string(solana_env)
@@ -1650,15 +1751,19 @@ JournalService::sync_wallet(std::string_view wallet_id, std::int64_t user_id) co
                 const std::string rpc_url = configured_rpc->value_or(default_rpc);
                 // 出网校验在每次同步前重跑：配置时通过不代表现在仍然安全（DNS 可能已改指内网）。
                 if (const auto rejection = egress_rejection(rpc_url)) {
-                    co_return std::unexpected(rpc_endpoint_problem("Solana RPC", *rejection));
+                    auto issue = rpc_endpoint_problem("Solana RPC", *rejection);
+                    co_await release_running(issue.detail);
+                    co_return std::unexpected(std::move(issue));
                 }
                 infrastructure::SolanaAdapter adapter(infrastructure::SolanaAdapterOptions{
                     .rpcUrl = rpc_url,
                     .limit = 50,
                 });
-                transactions = co_await adapter.fetch_wallet_transactions(target->address);
+                transactions = co_await adapter.fetch_wallet_transactions(target->address, cursor);
             } else {
-                co_return std::unexpected(problem(422, "unsupported_chain", "链暂不支持", "该钱包链暂不支持同步"));
+                auto issue = problem(422, "unsupported_chain", "链暂不支持", "该钱包链暂不支持同步");
+                co_await release_running(issue.detail);
+                co_return std::unexpected(std::move(issue));
             }
             stats = co_await repository_->record_wallet_sync(wallet_id, user_id, transactions);
         }
@@ -1676,6 +1781,7 @@ JournalService::sync_wallet(std::string_view wallet_id, std::int64_t user_id) co
         LOG_ERROR << "wallet_sync_failed ref=" << reference << " wallet=" << std::string(wallet_id)
                   << " detail=" << *failure_detail;
         const std::string safe_detail = "钱包同步失败，请在服务端日志中查看事件编号 " + reference;
+        if (claimed) co_await release_running(safe_detail);
         try {
             co_await repository_->create_wallet_sync_job(wallet_id, "failed", 0, 0, safe_detail);
         } catch (...) {
