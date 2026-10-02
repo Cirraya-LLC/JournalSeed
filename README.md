@@ -122,6 +122,7 @@ Vite 会在 `127.0.0.1:5173` 提供热更新，并把 `/api` 代理到 `127.0.0.
 | `JOURNALSEED_CHAIN_SETTINGS_KEY`  | 未设置                              | 加密链配置中 API Key 与自定义 RPC URL 的主密钥，见下              |
 | `JOURNALSEED_RPC_ALLOW_HOSTS`     | 未设置                              | 出网校验白名单，逗号分隔的主机名，见下                            |
 | `JOURNALSEED_ETHERSCAN_BASE_URL`  | `https://api.etherscan.io`          | Ethereum/Polygon 转账历史使用的 Etherscan V2 基地址               |
+| `JOURNALSEED_BLOCKSCOUT_ETHEREUM_URL` / `JOURNALSEED_BLOCKSCOUT_POLYGON_URL` | `https://eth.blockscout.com` / `https://polygon.blockscout.com` | 未配置 Etherscan API Key 时使用的免 Key Blockscout 基地址 |
 | `JOURNALSEED_SOLANA_RPC_URL`      | `https://api.mainnet-beta.solana.com` | 未保存自定义 Solana RPC URL 时使用的默认 endpoint               |
 | `JOURNALSEED_MOCK_CHAIN_SYNC`     | 未设置                              | 设为 `1` 用确定性 mock 数据同步；`JOURNALSEED_MOCK_MULTICHAIN_SYNC` 为等价别名 |
 | `JOURNALSEED_MOCK_TRON_SYNC`      | 未设置                              | 设为 `1` 只对 TRON 钱包使用 mock 数据                             |
@@ -167,7 +168,7 @@ openssl rand -hex 32
 
 首版支持 TRON、Ethereum、Polygon 和 Solana Mainnet 的 watch-only 地址同步。添加钱包只需公开地址，JournalSeed 不支持签名或转账，也不会请求或保存私钥。支持的链标识为 `tron-mainnet`、`ethereum-mainnet`、`polygon-mainnet` 和 `solana-mainnet`；TRON 使用 Base58Check 地址，Ethereum/Polygon 使用 `0x` EVM 地址，Solana 使用 base58 地址。
 
-链设置包含 TronGrid API Key、Etherscan API Key 以及 Ethereum/Polygon/Solana 自定义 RPC URL。TronGrid 和 Etherscan API Key 都是可选项；Ethereum 和 Polygon 转账历史使用 Etherscan V2 account APIs 查询，Etherscan API Key 可选但建议配置。Solana 同步使用 RPC，未配置自定义 Solana RPC URL 时使用公共 endpoint，public RPC 容易触发限流，手动验收或长期运行建议配置自己的 RPC URL；Ethereum/Polygon RPC URL 作为加密链配置保留，便于后续 provider 扩展，当前取数路径并不读取它们。要在网页链设置中保存 API Key 或自定义 RPC URL，服务端必须设置 `JOURNALSEED_CHAIN_SETTINGS_KEY`，该变量仅用于加密保存的密钥/URL，接口不会返回密钥本身。启用自动同步的钱包由后端约每 60 秒扫描一次，并按链设置里的同步间隔判断是否到期；钱包页面也提供“立即同步”。
+链设置包含 TronGrid API Key、Etherscan API Key 以及 Ethereum/Polygon/Solana 自定义 RPC URL。TronGrid 和 Etherscan API Key 都是可选项；Ethereum 和 Polygon 转账历史使用 Etherscan V2 account APIs 查询；未配置 Etherscan API Key 时自动改用该链的公共 Blockscout（免 Key，但每个 IP 约每 30 分钟只有 10 次请求，频繁手动同步会被限流），配置免费的 Etherscan Key 即可解除限制。只接受代币、不接受原生币的钱包每次同步只发 1 次请求；同步失败的钱包会等一个同步间隔再自动重试。Solana 同步使用 RPC，未配置自定义 Solana RPC URL 时使用公共 endpoint，public RPC 容易触发限流，手动验收或长期运行建议配置自己的 RPC URL；Ethereum/Polygon RPC URL 作为加密链配置保留，便于后续 provider 扩展，当前取数路径并不读取它们。要在网页链设置中保存 API Key 或自定义 RPC URL，服务端必须设置 `JOURNALSEED_CHAIN_SETTINGS_KEY`，该变量仅用于加密保存的密钥/URL，接口不会返回密钥本身。启用自动同步的钱包由后端约每 60 秒扫描一次，并按链设置里的同步间隔判断是否到期；钱包页面也提供“立即同步”。
 
 保存和使用自定义 RPC URL 时都要过出网校验：保存时不通过会返回带字段说明的 `validation_error`（422），同步时不通过会返回 `rpc_endpoint_rejected`（422）。同步前会重跑一次校验——保存时安全不代表现在仍然安全，DNS 可能已经改指内网。
 

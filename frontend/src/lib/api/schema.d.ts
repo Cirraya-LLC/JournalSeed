@@ -1099,7 +1099,12 @@ export interface components {
     ChainSettingsPatch: {
       tronGridApiKey?: string;
       clearTronGridApiKey?: boolean;
-      /** @description Optional but recommended Etherscan API key for Ethereum and Polygon EVM providers. */
+      /**
+       * @description Optional Etherscan API key for Ethereum and Polygon transfer history. Without one,
+       *     sync uses the chain's public Blockscout instance (eth.blockscout.com /
+       *     polygon.blockscout.com), which needs no key but allows only about 10 requests per IP
+       *     per ~30 minutes; a key (free at etherscan.io) lifts that limit.
+       */
       etherscanApiKey?: string;
       clearEtherscanApiKey?: boolean;
       /**

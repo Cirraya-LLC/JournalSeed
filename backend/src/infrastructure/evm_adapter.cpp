@@ -3,10 +3,12 @@
 #include "journalseed/domain/chain.h"
 
 #include <boost/multiprecision/cpp_int.hpp>
+#include <drogon/HttpAppFramework.h>
 #include <drogon/HttpClient.h>
 #include <drogon/HttpRequest.h>
 #include <drogon/HttpResponse.h>
 #include <glaze/glaze.hpp>
+#include <trantor/net/EventLoop.h>
 #include <trantor/utils/Logger.h>
 
 #include <algorithm>
@@ -15,6 +17,7 @@
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -256,9 +259,34 @@ std::optional<ChainTransactionInput> parse_native_transaction(const Generic &ite
     return tx;
 }
 
+// The movement key's ordinal for a token transfer. It must not depend on which provider
+// served the transfer or in what order: Etherscan reports logIndex but Blockscout does not,
+// and a wallet can move between the two when an API key is added or removed — any
+// difference would book the checkpoint block's transfers a second time. So the ordinal is a
+// hash of what identifies the transfer within its transaction. Two transfers identical in
+// all of those fields are indistinguishable, so bumping the later one is order-independent.
+std::uint32_t transfer_ordinal(std::string_view contract, std::string_view from,
+                               std::string_view to, std::string_view raw_value,
+                               std::string_view tx_hash, std::set<std::string> &used) {
+    std::uint32_t hash = 2166136261U;
+    for (const auto part : {contract, from, to, raw_value}) {
+        for (const auto character : part) {
+            hash ^= static_cast<unsigned char>(character);
+            hash *= 16777619U;
+        }
+        hash ^= 0x1FU;
+        hash *= 16777619U;
+    }
+    // Keep clear of the small ordinals the native/fee movements of the same transaction use.
+    std::uint32_t ordinal = 1000U + hash % 4000000000U;
+    while (!used.insert(std::string(tx_hash) + ':' + std::to_string(ordinal)).second) ++ordinal;
+    return ordinal;
+}
+
 std::optional<ChainTransactionInput> parse_erc20_transaction(const Generic &item,
                                                              std::string_view wallet,
-                                                             const EvmAdapterOptions &options) {
+                                                             const EvmAdapterOptions &options,
+                                                             std::set<std::string> &used_ordinals) {
     const auto tx_hash = string_member(item, "hash");
     if (!tx_hash || tx_hash->empty()) return std::nullopt;
     const auto from = normalize_evm_address(string_member(item, "from"), options.chainCode);
@@ -277,8 +305,8 @@ std::optional<ChainTransactionInput> parse_erc20_transaction(const Generic &item
     const auto contract = normalize_evm_address(string_member(item, "contractAddress"), options.chainCode);
     const auto symbol = bounded_text(string_member(item, "tokenSymbol"), 24, "ERC20");
     const auto name = bounded_text(string_member(item, "tokenName"), 120, symbol);
-    const auto log_index = i64_from_decimal(string_member(item, "logIndex")).value_or(0);
-    const auto ordinal = static_cast<std::uint32_t>(log_index < 0 ? 0 : log_index) + 1;
+    const auto ordinal = transfer_ordinal(contract ? std::string_view(*contract) : std::string_view(symbol),
+                                          *from, *to, *raw_value, *tx_hash, used_ordinals);
     const std::string direction = from_wallet && to_wallet ? "internal" : (to_wallet ? "incoming" : "outgoing");
     const std::string asset_identifier = contract ? *contract : symbol;
 
@@ -315,12 +343,13 @@ std::optional<ChainTransactionInput> parse_erc20_transaction(const Generic &item
 std::vector<ChainTransactionInput> parse_response(std::string_view body,
                                                   std::string_view wallet,
                                                   const EvmAdapterOptions &options,
-                                                  bool erc20) {
+                                                  bool erc20,
+                                                  std::set<std::string> &used_ordinals) {
     Generic root;
     if (const auto error = glz::read_json(root, body); error) {
         // 上游正文不可信，只写进服务端日志，绝不回显给调用方或落库。
-        LOG_ERROR << "Etherscan JSON 解析失败: " << glz::format_error(error, body);
-        throw std::runtime_error("Etherscan 响应解析失败");
+        LOG_ERROR << options.providerName << " JSON 解析失败: " << glz::format_error(error, body);
+        throw std::runtime_error(options.providerName + " 响应解析失败");
     }
     const auto result = member(root, "result");
     if (!result || !result->holds<Array>()) {
@@ -328,12 +357,14 @@ std::vector<ChainTransactionInput> parse_response(std::string_view body,
         const auto message = string_member(root, "message").value_or("");
         if (status == "0" && (message == "No transactions found" || message == "No records found")) return {};
         if (status == "0" && result && result->holds<std::string>() && result->get<std::string>().find("No transactions") != std::string::npos) return {};
-        LOG_ERROR << "Etherscan 请求未返回交易数组，上游 status=" << status << " message=" << message;
-        throw std::runtime_error("Etherscan 请求未返回交易数组");
+        if (status == "0" && message.find("No token transfers") != std::string::npos) return {};
+        LOG_ERROR << options.providerName << " 请求未返回交易数组，上游 status=" << status
+                  << " message=" << message;
+        throw std::runtime_error(options.providerName + " 请求未返回交易数组");
     }
     std::vector<ChainTransactionInput> output;
     for (const auto &item : result->get<Array>()) {
-        auto parsed = erc20 ? parse_erc20_transaction(item, wallet, options)
+        auto parsed = erc20 ? parse_erc20_transaction(item, wallet, options, used_ordinals)
                             : parse_native_transaction(item, wallet, options);
         if (parsed && !parsed->movements.empty()) output.push_back(std::move(*parsed));
     }
@@ -350,16 +381,30 @@ EvmAdapter::EvmAdapter(EvmAdapterOptions options) : options_(std::move(options))
 
 drogon::Task<std::string> EvmAdapter::get(std::string query) const {
     auto client = drogon::HttpClient::newHttpClient(options_.baseUrl);
-    auto request = drogon::HttpRequest::newHttpRequest();
-    request->setMethod(drogon::Get);
-    request->setPath("/v2/api?" + std::move(query));
-    const auto response = co_await client->sendRequestCoro(request, 30.0);
-    if (!response || response->statusCode() < 200 || response->statusCode() >= 300) {
-        if (response) LOG_ERROR << "Etherscan 请求失败，HTTP 状态码 " << response->statusCode();
-        throw std::runtime_error("Etherscan 请求失败");
+    const auto path = options_.apiPath + "?" + std::move(query);
+    // Keyless providers (Blockscout) rate-limit bursts with HTTP 429; one sync makes several
+    // calls back to back, so back off 1 s, 2 s, 4 s before giving up on the pass.
+    for (int attempt = 0;; ++attempt) {
+        auto request = drogon::HttpRequest::newHttpRequest();
+        request->setMethod(drogon::Get);
+        request->setPath(path);
+        const auto response = co_await client->sendRequestCoro(request, 30.0);
+        if (response && response->statusCode() == drogon::k429TooManyRequests && attempt < 3) {
+            LOG_WARN << options_.providerName << " 限流（HTTP 429），第 " << attempt + 1 << " 次重试";
+            auto *loop = trantor::EventLoop::getEventLoopOfCurrentThread();
+            if (!loop) loop = drogon::app().getLoop();
+            co_await drogon::sleepCoro(loop, static_cast<double>(1 << attempt));
+            continue;
+        }
+        if (!response || response->statusCode() < 200 || response->statusCode() >= 300) {
+            if (response) {
+                LOG_ERROR << options_.providerName << " 请求失败，HTTP 状态码 " << response->statusCode();
+            }
+            throw std::runtime_error(options_.providerName + " 请求失败");
+        }
+        reject_oversized_response(response);
+        co_return std::string(response->body());
     }
-    reject_oversized_response(response);
-    co_return std::string(response->body());
 }
 
 drogon::Task<std::vector<ChainTransactionInput>>
@@ -376,10 +421,11 @@ EvmAdapter::fetch_action_pages(std::string_view address, std::string_view action
     if (resume) shared += "&startblock=" + std::to_string(*cursor.block);
     const int max_pages = resume ? 8 : 1;
     std::vector<ChainTransactionInput> output;
+    std::set<std::string> used_ordinals;
     for (int page = 1; page <= max_pages; ++page) {
         auto parsed = parse_response(
             co_await get(shared + "&page=" + std::to_string(page)), address, options_,
-            action == "tokentx");
+            action == "tokentx", used_ordinals);
         if (parsed.empty()) break;
         output.insert(output.end(), parsed.begin(), parsed.end());
         if (!resume || parsed.size() < options_.limit) break;
@@ -391,7 +437,8 @@ drogon::Task<std::vector<ChainTransactionInput>>
 EvmAdapter::fetch_wallet_transactions(std::string_view normalized_address,
                                       const ChainFetchCursor &cursor) const {
     const std::string address(normalized_address);
-    auto native = co_await fetch_action_pages(address, "txlist", cursor);
+    std::vector<ChainTransactionInput> native;
+    if (options_.includeNative) native = co_await fetch_action_pages(address, "txlist", cursor);
     auto tokens = co_await fetch_action_pages(address, "tokentx", cursor);
     native.reserve(native.size() + tokens.size());
     for (auto &tx : tokens) native.push_back(std::move(tx));

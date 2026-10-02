@@ -78,14 +78,14 @@
       label: 'Ethereum Mainnet',
       addressLabel: 'Ethereum 地址',
       placeholder: '0x...',
-      help: '支持 Ethereum Mainnet EVM 地址，标签会与 Polygon 共享。'
+      help: '支持 Ethereum Mainnet EVM 地址，标签会与 Polygon 共享；未配置 Etherscan Key 时走免费的 Blockscout。'
     },
     {
       value: 'polygon-mainnet',
       label: 'Polygon Mainnet',
       addressLabel: 'Polygon 地址',
       placeholder: '0x...',
-      help: '支持 Polygon Mainnet EVM 地址，标签会与 Ethereum 共享。'
+      help: '支持 Polygon Mainnet EVM 地址，标签会与 Ethereum 共享；未配置 Etherscan Key 时走免费的 Blockscout。'
     },
     {
       value: 'solana-mainnet',
@@ -630,7 +630,7 @@
             bind:value={etherscanApiKey}
             placeholder={settings?.etherscanApiKeyConfigured
               ? '已配置；填写新 Key 可替换'
-              : 'Ethereum / Polygon 浏览器 API Key'}
+              : '可选；不填则用免费的 Blockscout 公共接口'}
           />
         </div>
         <label class="check-line clear-key"
