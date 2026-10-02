@@ -1909,7 +1909,11 @@ components:
           minLength: 1
           maxLength: 1024
           writeOnly: true
-          description: Optional but recommended Etherscan API key for Ethereum and Polygon EVM providers.
+          description: |
+            Optional Etherscan API key for Ethereum and Polygon transfer history. Without one,
+            sync uses the chain's public Blockscout instance (eth.blockscout.com /
+            polygon.blockscout.com), which needs no key but allows only about 10 requests per IP
+            per ~30 minutes; a key (free at etherscan.io) lifts that limit.
         clearEtherscanApiKey: { type: boolean }
         ethereumRpcUrl:
           type: string

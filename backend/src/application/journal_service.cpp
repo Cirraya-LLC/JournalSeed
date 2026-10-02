@@ -1826,6 +1826,15 @@ JournalService::sync_wallet(std::string_view wallet_id, std::int64_t user_id) co
                 409, "wallet_sync_in_progress", "钱包正在同步",
                 "该钱包已有一次同步在进行中，请稍后再试"));
         }
+        // Adapters compare every transfer's addresses, which they normalize, with this one
+        // verbatim. The stored `address` is what the user typed (EVM checksum case included),
+        // so it must be normalized here or a mixed-case 0x address never matches anything.
+        auto wallet_address = domain::chain::normalize_address(target->chain, target->address);
+        if (!wallet_address) {
+            auto issue = problem(422, "invalid_wallet_address", "钱包地址无效", wallet_address.error().message);
+            co_await release_running(issue.detail);
+            co_return std::unexpected(std::move(issue));
+        }
         const auto cursor = co_await repository_->wallet_sync_cursor(wallet_id);
         infrastructure::SyncWriteStats stats;
         const bool mock_all = [] {
@@ -1839,7 +1848,7 @@ JournalService::sync_wallet(std::string_view wallet_id, std::int64_t user_id) co
         }();
         if (mock_all || (mock_tron && target->chain == "tron-mainnet")) {
             stats = co_await repository_->record_wallet_sync(
-                wallet_id, user_id, mock_chain_transactions(target->chain, target->address));
+                wallet_id, user_id, mock_chain_transactions(target->chain, *wallet_address));
         } else {
             const auto settings = co_await repository_->chain_settings();
             const auto secret = co_await repository_->chain_settings_secret();
@@ -1860,7 +1869,7 @@ JournalService::sync_wallet(std::string_view wallet_id, std::int64_t user_id) co
                     .apiKey = std::move(*api_key),
                     .limit = 100,
                 });
-                transactions = co_await adapter.fetch_wallet_transactions(target->address, cursor);
+                transactions = co_await adapter.fetch_wallet_transactions(*wallet_address, cursor);
             } else if (target->chain == "ethereum-mainnet" || target->chain == "polygon-mainnet") {
                 auto api_key = decrypt_secret(secret.etherscanApiKey);
                 if (!api_key) {
@@ -1868,25 +1877,39 @@ JournalService::sync_wallet(std::string_view wallet_id, std::int64_t user_id) co
                     co_return std::unexpected(api_key.error());
                 }
                 const bool polygon = target->chain == "polygon-mainnet";
-                const char *base = std::getenv("JOURNALSEED_ETHERSCAN_BASE_URL");
-                const std::string base_url = base && *base
-                    ? std::string(base)
-                    : std::string("https://api.etherscan.io");
+                // Etherscan answers nothing without a key, so a missing key means the chain's
+                // public Blockscout instance, which serves the same account API keyless.
+                const bool use_etherscan = api_key->has_value() && !(*api_key)->empty();
+                const char *base = std::getenv(use_etherscan
+                                                   ? "JOURNALSEED_ETHERSCAN_BASE_URL"
+                                                   : (polygon ? "JOURNALSEED_BLOCKSCOUT_POLYGON_URL"
+                                                              : "JOURNALSEED_BLOCKSCOUT_ETHEREUM_URL"));
+                const std::string default_url = use_etherscan ? "https://api.etherscan.io"
+                                                : polygon      ? "https://polygon.blockscout.com"
+                                                               : "https://eth.blockscout.com";
+                const std::string base_url = base && *base ? std::string(base) : default_url;
+                const std::string provider = use_etherscan ? "Etherscan" : "Blockscout";
                 if (const auto rejection = egress_rejection(base_url)) {
-                    auto issue = rpc_endpoint_problem("Etherscan", *rejection);
+                    auto issue = rpc_endpoint_problem(provider, *rejection);
                     co_await release_running(issue.detail);
                     co_return std::unexpected(std::move(issue));
                 }
                 infrastructure::EvmAdapter adapter(infrastructure::EvmAdapterOptions{
                     .baseUrl = base_url,
+                    .apiPath = use_etherscan ? "/v2/api" : "/api",
+                    .providerName = provider,
                     .apiKey = std::move(*api_key),
                     .chainCode = target->chain,
                     .chainId = polygon ? 137 : 1,
                     .nativeSymbol = polygon ? "POL" : "ETH",
                     .nativeName = polygon ? "Polygon Ecosystem Token" : "Ether",
                     .limit = 100,
+                    .includeNative = target->acceptAllTokens ||
+                                     std::ranges::any_of(target->acceptedTokens, [](const auto &rule) {
+                                         return rule.contract == domain::chain::kNativeAssetKey;
+                                     }),
                 });
-                transactions = co_await adapter.fetch_wallet_transactions(target->address, cursor);
+                transactions = co_await adapter.fetch_wallet_transactions(*wallet_address, cursor);
             } else if (target->chain == "solana-mainnet") {
                 auto configured_rpc = decrypt_secret(secret.solanaRpcUrl);
                 if (!configured_rpc) {
@@ -1908,7 +1931,7 @@ JournalService::sync_wallet(std::string_view wallet_id, std::int64_t user_id) co
                     .rpcUrl = rpc_url,
                     .limit = 50,
                 });
-                transactions = co_await adapter.fetch_wallet_transactions(target->address, cursor);
+                transactions = co_await adapter.fetch_wallet_transactions(*wallet_address, cursor);
             } else {
                 auto issue = problem(422, "unsupported_chain", "链暂不支持", "该钱包链暂不支持同步");
                 co_await release_running(issue.detail);

@@ -1699,6 +1699,14 @@ SELECT w.public_id::text AS id
         OR w.last_synced_at < clock_timestamp() - INTERVAL '1 minute' * (
             SELECT sync_interval_minutes FROM chain_settings WHERE singleton = TRUE
         ))
+   -- A failed pass leaves last_synced_at untouched, so without this a failing wallet was
+   -- retried on every one-minute tick. Against a rate-limited free provider that keeps the
+   -- quota exhausted forever; waiting one interval after the last attempt lets it recover.
+   AND (s.status IS DISTINCT FROM 'failed'
+        OR s.last_started_at IS NULL
+        OR s.last_started_at < clock_timestamp() - INTERVAL '1 minute' * (
+            SELECT sync_interval_minutes FROM chain_settings WHERE singleton = TRUE
+        ))
  ORDER BY COALESCE(w.last_synced_at, '1970-01-01'::timestamptz), w.id
  LIMIT $1
 )SQL", static_cast<std::int64_t>(limit));
@@ -2206,9 +2214,11 @@ WITH input AS (
 ), rule AS (
     SELECT DISTINCT ON (r.contract)
            r.contract AS asset_key,
+           NULLIF(btrim(r.symbol), '') AS label,
            NULLIF(btrim(r."exchangeRate"), '')::numeric AS rate,
            NULLIF(btrim(r."accountId"), '') AS account_public_id
-      FROM jsonb_to_recordset($5::jsonb) AS r(contract text, "exchangeRate" text, "accountId" text)
+      FROM jsonb_to_recordset($5::jsonb)
+        AS r(contract text, symbol text, "exchangeRate" text, "accountId" text)
      WHERE NULLIF(btrim(r."exchangeRate"), '') IS NOT NULL
      ORDER BY r.contract
 ), base AS (
@@ -2218,10 +2228,12 @@ WITH input AS (
     -- asset's scale, and lands on the account the rule names. That account must be a live
     -- user account on the default asset; anything else (deleted, archived, another asset)
     -- falls back to the unallocated account rather than failing the whole sync.
+    -- Converted rows are described with the wallet's own name for the currency: a token can
+    -- rename itself on-chain (Polygon's USDT now reports USDT0) without changing what it is.
     SELECT mv.id AS movement_id,
            mv.direction,
            mv.occurred_at,
-           ast.symbol,
+           COALESCE(ru.label, ast.symbol) AS symbol,
            mv.amount AS chain_amount,
            ru.rate,
            CASE WHEN ru.rate IS NULL THEN mv.asset_id ELSE base.id END AS asset_id,
