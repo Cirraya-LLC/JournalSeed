@@ -666,9 +666,14 @@ UPDATE sessions s
 RETURNING u.id AS user_id, u.public_id::text AS user_public_id, u.username,
           to_char(s.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS expires_at
 )SQL";
-    const auto result = csrf_hash_hex
-                            ? co_await client_->execSqlCoro(query, token_hash_hex, *csrf_hash_hex)
-                            : co_await client_->execSqlCoro(query, token_hash_hex);
+    // 不要把 co_await 写进条件运算符的两个分支：GCC 14 对这种写法生成的协程代码会执行错分支，
+    // 曾导致无 CSRF 时解引用空 optional（std::bad_alloc 崩溃）并把 2 个参数绑定到 1 参数语句上。
+    drogon::orm::Result result{nullptr};
+    if (csrf_hash_hex) {
+        result = co_await client_->execSqlCoro(query, token_hash_hex, *csrf_hash_hex);
+    } else {
+        result = co_await client_->execSqlCoro(query, token_hash_hex);
+    }
     if (result.empty()) co_return std::nullopt;
     co_return SessionRecord{
         .userId = result.front()["user_id"].as<std::int64_t>(),
@@ -1068,20 +1073,23 @@ PostgresRepository::list_rows(std::string_view ledger_public_id,
  WHERE l.public_id = $1::uuid
 )SQL";
     sql += query.recycled ? " AND r.deleted_at IS NOT NULL\n" : " AND r.deleted_at IS NULL\n";
-    if (query.cursorValue && query.cursorId) {
+    const bool has_cursor = query.cursorValue && query.cursorId;
+    if (has_cursor) {
         sql += " AND (" + sort_expression + ", r.public_id) " + comparison +
                " ($2::" + cursor_cast + ", $3::uuid)\n";
     }
     sql += " ORDER BY " + sort_expression + " " + direction + ", r.public_id " + direction;
-    sql += query.cursorValue ? " LIMIT $4" : " LIMIT $2";
+    sql += has_cursor ? " LIMIT $4" : " LIMIT $2";
 
     const auto fetch_limit = static_cast<std::int64_t>(query.limit) + 1;
-    const auto rows = query.cursorValue && query.cursorId
-                          ? co_await client_->execSqlCoro(sql, std::string(ledger_public_id),
-                                                         *query.cursorValue, *query.cursorId,
-                                                         fetch_limit)
-                          : co_await client_->execSqlCoro(sql, std::string(ledger_public_id),
-                                                         fetch_limit);
+    // 同 find_session：co_await 不能放进条件运算符的分支里。
+    drogon::orm::Result rows{nullptr};
+    if (has_cursor) {
+        rows = co_await client_->execSqlCoro(sql, std::string(ledger_public_id),
+                                             *query.cursorValue, *query.cursorId, fetch_limit);
+    } else {
+        rows = co_await client_->execSqlCoro(sql, std::string(ledger_public_id), fetch_limit);
+    }
 
     application::RowPage page{
         .items = {},
