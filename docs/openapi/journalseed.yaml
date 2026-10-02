@@ -854,6 +854,19 @@ paths:
               schema: { $ref: "#/components/schemas/Problem" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "500": { $ref: "#/components/responses/ServerError" }
+  /chain-token-presets:
+    get:
+      operationId: listTokenPresets
+      description: USDT/USDC contracts offered as ready-made accepted currencies, per chain.
+      responses:
+        "200":
+          description: Every preset, for every supported chain.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/TokenPreset" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /chain-settings:
     get:
       operationId: getChainSettings
@@ -1015,6 +1028,13 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            `wallet_paused` when the wallet is paused (`enabled: false`), or
+            `wallet_sync_in_progress` when another pass for it is still running.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
         "422": { $ref: "#/components/responses/RpcEndpointRejected" }
         "500": { $ref: "#/components/responses/WalletSyncFailure" }
   /ledgers/{ledgerId}/chain-transactions:
@@ -1934,12 +1954,69 @@ components:
           description: "Public watch-only address for the selected chain: Base58Check for TRON, 0x EVM address for Ethereum/Polygon, or base58 Solana address."
         enabled: { type: boolean, default: true }
         autoSync: { type: boolean, default: true }
+        acceptedTokens:
+          type: array
+          minItems: 1
+          maxItems: 30
+          items: { $ref: "#/components/schemas/WalletTokenRule" }
+          description: |
+            Currencies this wallet books. Omitted: the chain's USDT/USDC presets (see
+            `listTokenPresets`), unconverted. Transfers of any other asset are not recorded at
+            all — no asset, account or row. Only transfers whose block time is at or after the
+            moment the wallet is added are booked (`syncFrom`).
     WalletPatch:
       type: object
       properties:
         name: { type: string, minLength: 1, maxLength: 120 }
-        enabled: { type: boolean }
+        enabled:
+          type: boolean
+          description: |
+            `false` pauses the wallet: the scheduler skips it and `syncWallet` answers 409
+            `wallet_paused`. The checkpoint is kept, so resuming catches up on the pause.
         autoSync: { type: boolean }
+        acceptedTokens:
+          type: array
+          minItems: 1
+          maxItems: 30
+          items: { $ref: "#/components/schemas/WalletTokenRule" }
+          description: |
+            Replaces the whole list and ends `acceptAllTokens`. Affects later syncs only;
+            rows already created are never rewritten.
+    WalletTokenRule:
+      type: object
+      required: [contract, symbol]
+      properties:
+        contract:
+          type: string
+          description: |
+            Token contract (SPL mint on Solana) on the wallet's chain, or `native` for the
+            chain's own coin, which also carries the fees. Stored normalized (EVM lowercase).
+        symbol:
+          type: string
+          maxLength: 24
+          description: Display name; blank is filled from the preset or the native symbol.
+        exchangeRate:
+          type: string
+          pattern: "^[0-9]{1,12}(\\.[0-9]{1,10})?$"
+          description: |
+            Positive decimal. When set, each transfer is booked in the ledger's default asset
+            as round(amount × exchangeRate, default-asset decimals) on `accountId`, with the
+            description `链上收款 · <amount> <symbol> × <rate>`. Absent: the transfer stays in
+            the token's own asset on the wallet's per-token account.
+        accountId:
+          type: string
+          format: uuid
+          description: |
+            Live user account on the default asset to book converted transfers on; absent
+            means the ledger's unallocated account. Ignored (dropped) without `exchangeRate`.
+    TokenPreset:
+      type: object
+      required: [chain, symbol, name, contract]
+      properties:
+        chain: { type: string, enum: [tron-mainnet, ethereum-mainnet, polygon-mainnet, solana-mainnet] }
+        symbol: { type: string }
+        name: { type: string }
+        contract: { type: string, description: Normalized the same way `WalletTokenRule.contract` is. }
     Wallet:
       allOf:
         - $ref: "#/components/schemas/WalletInput"
@@ -1979,6 +2056,17 @@ components:
               description: |
                 Present in practice, since the column is `NOT NULL DEFAULT`, but read through an
                 optional accessor and therefore not guaranteed by this contract.
+            acceptAllTokens:
+              type: boolean
+              description: |
+                True only for wallets created before accepted currencies existed; they keep
+                booking every asset until `acceptedTokens` is patched.
+            syncFrom:
+              type: [string, "null"]
+              format: date-time
+              description: |
+                Transfers before this moment are not booked. Absent for wallets that keep their
+                full history.
     AddressLabelInput:
       type: object
       required: [chain, address, displayName, kind, note]

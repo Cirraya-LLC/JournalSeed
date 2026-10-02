@@ -103,6 +103,35 @@ std::string display_prefix(std::string_view chain_code) {
     return "TRON";
 }
 
+// Every contract below was checked against its chain (symbol() and decimals() = 6)
+// before being listed. Polygon carries both the native USDC and the older bridged
+// USDC.e, since payers still send either.
+constexpr std::array kTronPresets{
+    TokenPreset{"USDT", "Tether USD", "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"},
+    TokenPreset{"USDC", "USD Coin", "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8"},
+};
+constexpr std::array kEthereumPresets{
+    TokenPreset{"USDT", "Tether USD", "0xdAC17F958D2ee523a2206206994597C13D831ec7"},
+    TokenPreset{"USDC", "USD Coin", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"},
+};
+constexpr std::array kPolygonPresets{
+    TokenPreset{"USDT", "Tether USD", "0xc2132D05D31c914a87C6611C10748AEb04B58e8F"},
+    TokenPreset{"USDC", "USD Coin", "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"},
+    TokenPreset{"USDC.e", "USD Coin (PoS bridged)", "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"},
+};
+constexpr std::array kSolanaPresets{
+    TokenPreset{"USDT", "Tether USD", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"},
+    TokenPreset{"USDC", "USD Coin", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"},
+};
+
+std::span<const TokenPreset> token_presets(std::string_view chain_code) {
+    if (chain_code == "tron-mainnet") return kTronPresets;
+    if (chain_code == "ethereum-mainnet") return kEthereumPresets;
+    if (chain_code == "polygon-mainnet") return kPolygonPresets;
+    if (chain_code == "solana-mainnet") return kSolanaPresets;
+    return {};
+}
+
 std::string native_symbol(std::string_view chain_code) {
     if (chain_code == "ethereum-mainnet") return "ETH";
     if (chain_code == "polygon-mainnet") return "POL";

@@ -295,18 +295,40 @@ struct ChainSettingsPatch {
     std::optional<std::int32_t> syncIntervalMinutes;
 };
 
+// One currency a wallet accepts. `contract` is the normalized contract address, or "native"
+// for the chain's own coin. With exchangeRate set, each movement is booked in the ledger's
+// default asset as amount * exchangeRate on accountId (the unallocated account when absent);
+// without it, the movement stays in its own asset on the wallet's per-token account.
+struct WalletTokenRule {
+    std::string contract;
+    std::string symbol;
+    std::optional<std::string> exchangeRate;
+    std::optional<std::string> accountId;
+};
+
+struct TokenPresetView {
+    std::string chain;
+    std::string symbol;
+    std::string name;
+    std::string contract;
+};
+
 struct WalletInput {
     std::string chain{"tron-mainnet"};
     std::string name;
     std::string address;
     bool enabled{true};
     bool autoSync{true};
+    // Omitted: the chain's USDT/USDC presets, unconverted.
+    std::optional<std::vector<WalletTokenRule>> acceptedTokens;
 };
 
 struct WalletPatch {
     std::optional<std::string> name;
     std::optional<bool> enabled;
     std::optional<bool> autoSync;
+    // Replaces the whole list and ends accept-all mode.
+    std::optional<std::vector<WalletTokenRule>> acceptedTokens;
 };
 
 struct WalletView {
@@ -323,6 +345,11 @@ struct WalletView {
     std::optional<std::string> lastError;
     std::string syncStatus;
     std::optional<std::string> createdAt;
+    // True only for wallets created before accepted currencies existed: every asset syncs.
+    bool acceptAllTokens{false};
+    std::vector<WalletTokenRule> acceptedTokens;
+    // Transfers before this moment are not booked; null for wallets that keep full history.
+    std::optional<std::string> syncFrom;
 };
 
 struct AddressLabelInput {

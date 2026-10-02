@@ -20,6 +20,7 @@ import type {
   RowPage,
   Session,
   SyncResult,
+  TokenPreset,
   Wallet,
   WalletInput,
   WalletPatch,
@@ -248,6 +249,10 @@ class JournalSeedApi {
       method: 'PATCH',
       body: JSON.stringify(input)
     });
+  }
+
+  tokenPresets(): Promise<TokenPreset[]> {
+    return this.request('/chain-token-presets');
   }
 
   wallets(ledgerId: string): Promise<Wallet[]> {

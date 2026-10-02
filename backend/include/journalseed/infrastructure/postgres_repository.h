@@ -275,6 +275,11 @@ class PostgresRepository final {
                   std::string_view normalized_address) const;
     [[nodiscard]] drogon::Task<application::WalletView>
     update_wallet(std::string_view wallet_public_id, const application::WalletPatch &patch) const;
+    // True when every id names a live user account of this ledger on its default asset —
+    // the only accounts a converted wallet currency may be booked on.
+    [[nodiscard]] drogon::Task<bool>
+    accounts_bookable_in_default_asset(std::string_view ledger_public_id,
+                                       const std::vector<std::string> &account_public_ids) const;
     [[nodiscard]] drogon::Task<> delete_wallet(std::string_view wallet_public_id) const;
     [[nodiscard]] drogon::Task<std::optional<application::WalletView>>
     wallet(std::string_view wallet_public_id) const;

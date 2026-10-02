@@ -773,6 +773,113 @@ std::vector<infrastructure::ChainTransactionInput> mock_chain_transactions(
     return {};
 }
 
+Problem token_rule_problem(std::string detail, std::string field_message) {
+    auto issue = make_problem(422, "validation_error", "接受的货币需要调整", std::move(detail));
+    issue.fields.emplace("acceptedTokens", std::move(field_message));
+    return issue;
+}
+
+// A positive plain decimal: up to 12 integer and 10 fraction digits, no sign or exponent.
+// The value only ever reaches PostgreSQL's numeric, which reads exactly what is written.
+bool valid_exchange_rate(std::string_view value) {
+    const auto dot = value.find('.');
+    const auto integer = value.substr(0, dot);
+    const auto fraction = dot == std::string_view::npos ? std::string_view{} : value.substr(dot + 1);
+    if (integer.empty() || integer.size() > 12) return false;
+    if (dot != std::string_view::npos && (fraction.empty() || fraction.size() > 10)) return false;
+    const auto digits = [](std::string_view part) {
+        return std::ranges::all_of(part, [](char c) { return c >= '0' && c <= '9'; });
+    };
+    if (!digits(integer) || !digits(fraction)) return false;
+    return std::ranges::any_of(value, [](char c) { return c >= '1' && c <= '9'; });
+}
+
+std::vector<WalletTokenRule> preset_token_rules(std::string_view chain) {
+    std::vector<WalletTokenRule> rules;
+    for (const auto &preset : domain::chain::token_presets(chain)) {
+        auto contract = domain::chain::normalize_address(chain, preset.contract);
+        if (!contract) continue;
+        rules.push_back(WalletTokenRule{.contract = std::move(*contract),
+                                        .symbol = std::string(preset.symbol),
+                                        .exchangeRate = std::nullopt,
+                                        .accountId = std::nullopt});
+    }
+    return rules;
+}
+
+// Brings a client-supplied accepted-currency list into the stored form: contracts in the
+// same normalized spelling the chain adapters emit (or "native"), a display symbol, and a
+// rate/account pair only where a rate is actually set.
+ServiceResult<std::vector<WalletTokenRule>>
+normalize_token_rules(std::string_view chain, std::vector<WalletTokenRule> rules) {
+    if (rules.empty()) {
+        return std::unexpected(token_rule_problem("至少需要接受一种货币", "请至少选择一种货币"));
+    }
+    if (rules.size() > 30) {
+        return std::unexpected(token_rule_problem("每个钱包最多接受 30 种货币", "货币数量过多"));
+    }
+    std::vector<WalletTokenRule> result;
+    result.reserve(rules.size());
+    for (auto &rule : rules) {
+        auto contract = trimmed(std::move(rule.contract));
+        if (contract == domain::chain::kNativeAssetKey) {
+            rule.contract = std::move(contract);
+        } else {
+            auto normalized = domain::chain::normalize_address(chain, contract);
+            if (!normalized) {
+                return std::unexpected(token_rule_problem(
+                    "合约地址无效：" + contract,
+                    "请输入有效的 " + domain::chain::display_prefix(chain) + " 合约地址"));
+            }
+            rule.contract = std::move(*normalized);
+        }
+        if (std::ranges::any_of(result, [&](const auto &seen) { return seen.contract == rule.contract; })) {
+            return std::unexpected(token_rule_problem("同一种货币添加了两次", "请删除重复的货币"));
+        }
+
+        rule.symbol = trimmed(std::move(rule.symbol));
+        if (rule.symbol.empty()) {
+            if (rule.contract == domain::chain::kNativeAssetKey) {
+                rule.symbol = domain::chain::native_symbol(chain);
+            } else {
+                rule.symbol = "代币";
+                for (const auto &preset : domain::chain::token_presets(chain)) {
+                    const auto preset_contract = domain::chain::normalize_address(chain, preset.contract);
+                    if (preset_contract && *preset_contract == rule.contract) rule.symbol = preset.symbol;
+                }
+            }
+        }
+        if (rule.symbol.size() > 48) {
+            return std::unexpected(token_rule_problem("货币名称过长", "货币名称最多 24 个字"));
+        }
+
+        if (rule.exchangeRate) *rule.exchangeRate = trimmed(std::move(*rule.exchangeRate));
+        if (rule.exchangeRate && rule.exchangeRate->empty()) rule.exchangeRate.reset();
+        if (rule.exchangeRate && !valid_exchange_rate(*rule.exchangeRate)) {
+            return std::unexpected(token_rule_problem(
+                rule.symbol + " 的汇率需要是大于 0 的数字（最多 10 位小数）", "汇率格式不正确"));
+        }
+        if (rule.accountId) *rule.accountId = trimmed(std::move(*rule.accountId));
+        // An account only means something for a converted currency: unconverted amounts stay
+        // in the token's own asset and can only land on the wallet's per-token account.
+        if (!rule.exchangeRate || (rule.accountId && rule.accountId->empty())) rule.accountId.reset();
+        result.push_back(std::move(rule));
+    }
+    return result;
+}
+
+std::vector<std::string> rule_account_ids(const std::vector<WalletTokenRule> &rules) {
+    std::vector<std::string> ids;
+    for (const auto &rule : rules) {
+        if (rule.accountId) ids.push_back(*rule.accountId);
+    }
+    return ids;
+}
+
+Problem rule_account_problem() {
+    return token_rule_problem("记入账户需要是本账本中未归档的本位币账户", "请重新选择记入账户");
+}
+
 
 }  // namespace
 
@@ -1590,6 +1697,22 @@ JournalService::update_chain_settings(ChainSettingsPatch patch) const {
 }
 
 
+std::vector<TokenPresetView> JournalService::token_presets() const {
+    std::vector<TokenPresetView> result;
+    for (const std::string_view chain :
+         {"tron-mainnet", "ethereum-mainnet", "polygon-mainnet", "solana-mainnet"}) {
+        for (const auto &preset : domain::chain::token_presets(chain)) {
+            auto contract = domain::chain::normalize_address(chain, preset.contract);
+            if (!contract) continue;
+            result.push_back(TokenPresetView{.chain = std::string(chain),
+                                             .symbol = std::string(preset.symbol),
+                                             .name = std::string(preset.name),
+                                             .contract = std::move(*contract)});
+        }
+    }
+    return result;
+}
+
 drogon::Task<ServiceResult<std::vector<WalletView>>>
 JournalService::wallets(std::string_view ledger_id) const {
     try { co_return co_await repository_->list_wallets(ledger_id); }
@@ -1617,7 +1740,16 @@ JournalService::create_wallet(std::string_view ledger_id, WalletInput input) con
         issue.fields.emplace("address", "请输入有效的 " + domain::chain::display_prefix(input.chain) + " 地址");
         co_return std::unexpected(std::move(issue));
     }
+    auto rules = input.acceptedTokens
+                     ? normalize_token_rules(input.chain, std::move(*input.acceptedTokens))
+                     : ServiceResult<std::vector<WalletTokenRule>>(preset_token_rules(input.chain));
+    if (!rules) co_return std::unexpected(std::move(rules.error()));
+    input.acceptedTokens = std::move(*rules);
     try {
+        const auto account_ids = rule_account_ids(*input.acceptedTokens);
+        const bool accounts_ok =
+            co_await repository_->accounts_bookable_in_default_asset(ledger_id, account_ids);
+        if (!accounts_ok) co_return std::unexpected(rule_account_problem());
         co_return co_await repository_->create_wallet(ledger_id, input, *address);
     } catch (const std::exception &exception) { co_return repository_failure<WalletView>(exception); }
 }
@@ -1644,8 +1776,19 @@ JournalService::update_wallet(std::string_view wallet_id, WalletPatch patch) con
         }
     }
     try {
-        // 不再预读一次钱包：update_wallet 的 UPDATE 命中 0 行时自己抛 EntityNotFound("wallet")，
+        // 改接受的货币时需要钱包的链（规范化合约地址）和账本（校验记入账户），只有这时才预读；
+        // 其余情况 update_wallet 的 UPDATE 命中 0 行时自己抛 EntityNotFound("wallet")，
         // repository_failure 会把它翻成 404 wallet_not_found。
+        if (patch.acceptedTokens) {
+            const auto current = co_await repository_->wallet(wallet_id);
+            if (!current) co_return std::unexpected(not_found_problem("wallet"));
+            auto rules = normalize_token_rules(current->chain, std::move(*patch.acceptedTokens));
+            if (!rules) co_return std::unexpected(std::move(rules.error()));
+            const bool accounts_ok = co_await repository_->accounts_bookable_in_default_asset(
+                current->ledgerId, rule_account_ids(*rules));
+            if (!accounts_ok) co_return std::unexpected(rule_account_problem());
+            patch.acceptedTokens = std::move(*rules);
+        }
         co_return co_await repository_->update_wallet(wallet_id, patch);
     } catch (const std::exception &exception) { co_return repository_failure<WalletView>(exception); }
 }
@@ -1671,6 +1814,12 @@ JournalService::sync_wallet(std::string_view wallet_id, std::int64_t user_id) co
     try {
         const auto target = co_await repository_->wallet(wallet_id);
         if (!target) co_return std::unexpected(not_found_problem("wallet"));
+        // Paused wallets are skipped by the scheduler (list_due_wallet_ids) and refuse manual
+        // syncs too. The checkpoint stays where it was, so resuming catches up on the pause.
+        if (!target->enabled) {
+            co_return std::unexpected(problem(409, "wallet_paused", "钱包同步已暂停",
+                                              "恢复同步后才能同步该钱包"));
+        }
         claimed = co_await repository_->try_begin_wallet_sync(wallet_id);
         if (!claimed) {
             co_return std::unexpected(problem(

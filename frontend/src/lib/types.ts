@@ -110,18 +110,42 @@ export interface ChainSettingsPatch {
   syncIntervalMinutes?: number;
 }
 
+/**
+ * A currency a wallet accepts. `contract` is the normalized contract address, or `native`
+ * for the chain's own coin (TRX / ETH / POL / SOL, which also pays the fees). With
+ * `exchangeRate` set, each transfer is booked in the default asset as amount × rate on
+ * `accountId` (the unallocated account when absent); otherwise it stays in the token's own
+ * asset on the wallet's per-token account.
+ */
+export interface WalletTokenRule {
+  contract: string;
+  symbol: string;
+  exchangeRate?: string;
+  accountId?: string;
+}
+
+export interface TokenPreset {
+  chain: ChainCode;
+  symbol: string;
+  name: string;
+  contract: string;
+}
+
 export interface WalletInput {
   chain: ChainCode;
   name: string;
   address: string;
   enabled: boolean;
   autoSync: boolean;
+  acceptedTokens?: WalletTokenRule[];
 }
 
+/** `enabled: false` pauses syncing; resuming catches up from where it stopped. */
 export interface WalletPatch {
   name?: string;
   enabled?: boolean;
   autoSync?: boolean;
+  acceptedTokens?: WalletTokenRule[];
 }
 
 export interface Wallet {
@@ -138,6 +162,11 @@ export interface Wallet {
   lastError: string | null;
   syncStatus: WalletSyncStatus;
   createdAt: string | null;
+  /** Wallets added before accepted currencies existed sync every asset. */
+  acceptAllTokens: boolean;
+  acceptedTokens: WalletTokenRule[];
+  /** Transfers before this moment are not booked; null means full history. */
+  syncFrom?: string | null;
 }
 
 export interface AddressLabelInput {
