@@ -490,6 +490,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/chain-token-presets': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description USDT/USDC contracts offered as ready-made accepted currencies, per chain. */
+    get: operations['listTokenPresets'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/chain-settings': {
     parameters: {
       query?: never;
@@ -1124,11 +1141,57 @@ export interface components {
       enabled: boolean;
       /** @default true */
       autoSync: boolean;
+      /**
+       * @description Currencies this wallet books. Omitted: the chain's USDT/USDC presets (see
+       *     `listTokenPresets`), unconverted. Transfers of any other asset are not recorded at
+       *     all — no asset, account or row. Only transfers whose block time is at or after the
+       *     moment the wallet is added are booked (`syncFrom`).
+       */
+      acceptedTokens?: components['schemas']['WalletTokenRule'][];
     };
     WalletPatch: {
       name?: string;
+      /**
+       * @description `false` pauses the wallet: the scheduler skips it and `syncWallet` answers 409
+       *     `wallet_paused`. The checkpoint is kept, so resuming catches up on the pause.
+       */
       enabled?: boolean;
       autoSync?: boolean;
+      /**
+       * @description Replaces the whole list and ends `acceptAllTokens`. Affects later syncs only;
+       *     rows already created are never rewritten.
+       */
+      acceptedTokens?: components['schemas']['WalletTokenRule'][];
+    };
+    WalletTokenRule: {
+      /**
+       * @description Token contract (SPL mint on Solana) on the wallet's chain, or `native` for the
+       *     chain's own coin, which also carries the fees. Stored normalized (EVM lowercase).
+       */
+      contract: string;
+      /** @description Display name; blank is filled from the preset or the native symbol. */
+      symbol: string;
+      /**
+       * @description Positive decimal. When set, each transfer is booked in the ledger's default asset
+       *     as round(amount × exchangeRate, default-asset decimals) on `accountId`, with the
+       *     description `链上收款 · <amount> <symbol> × <rate>`. Absent: the transfer stays in
+       *     the token's own asset on the wallet's per-token account.
+       */
+      exchangeRate?: string;
+      /**
+       * Format: uuid
+       * @description Live user account on the default asset to book converted transfers on; absent
+       *     means the ledger's unallocated account. Ignored (dropped) without `exchangeRate`.
+       */
+      accountId?: string;
+    };
+    TokenPreset: {
+      /** @enum {string} */
+      chain: 'tron-mainnet' | 'ethereum-mainnet' | 'polygon-mainnet' | 'solana-mainnet';
+      symbol: string;
+      name: string;
+      /** @description Normalized the same way `WalletTokenRule.contract` is. */
+      contract: string;
     };
     Wallet: components['schemas']['WalletInput'] & {
       /** Format: uuid */
@@ -1168,6 +1231,17 @@ export interface components {
        *     optional accessor and therefore not guaranteed by this contract.
        */
       createdAt?: string | null;
+      /**
+       * @description True only for wallets created before accepted currencies existed; they keep
+       *     booking every asset until `acceptedTokens` is patched.
+       */
+      acceptAllTokens?: boolean;
+      /**
+       * Format: date-time
+       * @description Transfers before this moment are not booked. Absent for wallets that keep their
+       *     full history.
+       */
+      syncFrom?: string | null;
     };
     AddressLabelInput: {
       /**
@@ -2844,6 +2918,27 @@ export interface operations {
       500: components['responses']['ServerError'];
     };
   };
+  listTokenPresets: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Every preset, for every supported chain. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TokenPreset'][];
+        };
+      };
+      401: components['responses']['Unauthorized'];
+    };
+  };
   getChainSettings: {
     parameters: {
       query?: never;
@@ -3077,6 +3172,18 @@ export interface operations {
       401: components['responses']['Unauthorized'];
       403: components['responses']['Forbidden'];
       404: components['responses']['NotFound'];
+      /**
+       * @description `wallet_paused` when the wallet is paused (`enabled: false`), or
+       *     `wallet_sync_in_progress` when another pass for it is still running.
+       */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['Problem'];
+        };
+      };
       422: components['responses']['RpcEndpointRejected'];
       500: components['responses']['WalletSyncFailure'];
     };

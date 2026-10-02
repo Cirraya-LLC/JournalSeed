@@ -28,6 +28,7 @@ This repository currently provides a runnable first end-to-end loop:
 - Cursor pagination, date/amount sorting, problem-detail JSON responses, authenticated SSE, hot-reloaded Lua named functions, in-browser Lua script creation/editing, and a restricted exact-decimal runtime.
 - Drogon serves the SvelteKit static build on the same origin; the compact desktop table, mobile list, detail drawer, and Chinese navigation are covered by browser acceptance tests.
 - A complete fetch-and-persist path for built-in TRON, Ethereum, Polygon, and Solana Mainnet watch-only wallet synchronization, plus a wallet-sync page, address labels, and a chain-transaction view. It stores public addresses only and never needs or accepts private keys; provider adapters for all four chains parse transfers, internal transfers, and fees into movements normalized to each asset's decimals, and every outbound endpoint is re-checked against the SSRF rules before each call.
+- Per-wallet accepted currencies: USDT / USDC presets plus any number of custom token contracts; every other asset (spam included) is not booked. Each currency can carry an exchange rate, in which case it is booked in the default asset as amount × rate on a chosen account. Only transfers after a wallet is added are recorded, and a wallet can be paused and resumed by hand — resuming catches up on the pause.
 
 The following capabilities are reserved in the database/API structure but are not claimed as completed
 first-release features yet: incremental formula recomputation, persistent background workers, streaming

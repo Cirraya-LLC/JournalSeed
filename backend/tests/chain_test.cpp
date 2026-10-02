@@ -42,3 +42,23 @@ TEST_CASE("multi-chain movement keys include chain code") {
     REQUIRE(movement_key("solana-mainnet", "sig", "incoming", "USDC:mint", "wallet", 1) ==
             "solana-mainnet:sig:incoming:USDC:mint:wallet:1");
 }
+
+TEST_CASE("token presets offer USDT and USDC on every chain and all normalize") {
+    for (const std::string_view chain :
+         {"tron-mainnet", "ethereum-mainnet", "polygon-mainnet", "solana-mainnet"}) {
+        const auto presets = token_presets(chain);
+        REQUIRE(presets.size() >= 2);
+        REQUIRE(presets[0].symbol == "USDT");
+        REQUIRE(presets[1].symbol == "USDC");
+        // A preset that fails to normalize would be dropped silently and its payments
+        // filtered out of the ledger, so every one of them must pass.
+        for (const auto &preset : presets) REQUIRE(normalize_address(chain, preset.contract));
+    }
+    REQUIRE(token_presets("bitcoin-mainnet").empty());
+
+    // The rule key must equal what the adapters emit for the same contract.
+    REQUIRE(*normalize_address("tron-mainnet", token_presets("tron-mainnet")[0].contract) ==
+            "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t");
+    REQUIRE(*normalize_address("polygon-mainnet", token_presets("polygon-mainnet")[0].contract) ==
+            "0xc2132d05d31c914a87c6611c10748aeb04b58e8f");
+}

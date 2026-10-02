@@ -12,6 +12,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -50,6 +51,14 @@ struct Movement {
     std::optional<std::string> from_norm;
     std::optional<std::string> to_addr;
     std::optional<std::string> to_norm;
+};
+
+// Every fetched transaction, accepted or not, so the checkpoint still moves past a window
+// that held nothing but filtered-out tokens instead of re-fetching it forever.
+struct Checkpoint {
+    std::string hash;
+    std::optional<std::int64_t> block;
+    std::optional<std::int64_t> ts_ms;
 };
 
 }  // namespace sync_payload
@@ -438,6 +447,10 @@ SELECT w.public_id::text AS id,
        w.auto_sync,
        to_char(w.last_synced_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_synced_at,
        w.last_error,
+       w.accept_all_tokens,
+       w.token_rules::text AS token_rules,
+       CASE WHEN w.sync_from = '-infinity' THEN NULL
+            ELSE to_char(w.sync_from AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END AS sync_from,
        COALESCE(s.status, 'idle') AS sync_status,
        to_char(w.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at
   FROM wallet_accounts w
@@ -445,6 +458,20 @@ SELECT w.public_id::text AS id,
   JOIN chain_networks cn ON cn.id = w.chain_network_id
   LEFT JOIN wallet_sync_states s ON s.wallet_id = w.id
 )SQL";
+
+std::string token_rules_json(const std::vector<application::WalletTokenRule> &rules) {
+    std::string json;
+    if (glz::write_json(rules, json)) throw std::runtime_error("token rule serialization failed");
+    return json;
+}
+
+std::vector<application::WalletTokenRule> token_rules_from_json(const std::string &json) {
+    std::vector<application::WalletTokenRule> rules;
+    // Written only by this repository from validated input; a column that somehow fails to
+    // parse is shown as "no rules" rather than taking the whole wallet list down.
+    if (glz::read_json(rules, json)) rules.clear();
+    return rules;
+}
 
 application::WalletView wallet_from_row(const Row &row) {
     auto address = row["address"].as<std::string>();
@@ -463,6 +490,9 @@ application::WalletView wallet_from_row(const Row &row) {
         .lastError = optional_string(row, "last_error"),
         .syncStatus = row["sync_status"].as<std::string>(),
         .createdAt = optional_string(row, "created_at"),
+        .acceptAllTokens = row["accept_all_tokens"].as<bool>(),
+        .acceptedTokens = token_rules_from_json(row["token_rules"].as<std::string>()),
+        .syncFrom = optional_string(row, "sync_from"),
     };
 }
 
@@ -1695,8 +1725,9 @@ WITH target AS (
      WHERE l.public_id = $1::uuid AND l.archived_at IS NULL
 ), inserted AS (
     INSERT INTO wallet_accounts
-        (ledger_id, chain_network_id, name, address, address_normalized, enabled, auto_sync)
-    SELECT t.ledger_id, t.chain_network_id, $2, $3, $4, $5, $6 FROM target t
+        (ledger_id, chain_network_id, name, address, address_normalized, enabled, auto_sync,
+         accept_all_tokens, token_rules)
+    SELECT t.ledger_id, t.chain_network_id, $2, $3, $4, $5, $6, FALSE, $8::jsonb FROM target t
     ON CONFLICT (ledger_id, chain_network_id, address_normalized)
         WHERE deleted_at IS NULL
     DO NOTHING
@@ -1712,6 +1743,9 @@ SELECT i.public_id::text AS id,
        i.auto_sync,
        to_char(i.last_synced_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_synced_at,
        i.last_error,
+       i.accept_all_tokens,
+       i.token_rules::text AS token_rules,
+       to_char(i.sync_from AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS sync_from,
        'idle' AS sync_status,
        to_char(i.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at
   FROM inserted i CROSS JOIN target t
@@ -1722,7 +1756,8 @@ SELECT i.public_id::text AS id,
         std::string(normalized_address),
         input.enabled,
         input.autoSync,
-        input.chain);
+        input.chain,
+        token_rules_json(input.acceptedTokens.value_or(std::vector<application::WalletTokenRule>{})));
 
     // 与 create_address_label 同样的分诊：账本缺失（或已归档）是缺失实体，走 404
     // ledger_not_found；链的取值已经由服务层按支持列表校验过，这里仍然落空说明
@@ -1748,20 +1783,48 @@ drogon::Task<application::WalletView> PostgresRepository::update_wallet(
 
     // A fixed statement with COALESCE keeps every field bound: an omitted patch
     // field binds NULL and the column keeps its current value.
+    std::optional<std::string> rules;
+    if (patch.acceptedTokens) rules = token_rules_json(*patch.acceptedTokens);
     const auto updated = co_await client_->execSqlCoro(R"SQL(
 UPDATE wallet_accounts
    SET name = COALESCE($2::text, name),
        enabled = COALESCE($3::boolean, enabled),
-       auto_sync = COALESCE($4::boolean, auto_sync)
+       auto_sync = COALESCE($4::boolean, auto_sync),
+       token_rules = COALESCE($5::jsonb, token_rules),
+       accept_all_tokens = CASE WHEN $5::jsonb IS NULL THEN accept_all_tokens ELSE FALSE END
  WHERE public_id=$1::uuid AND deleted_at IS NULL
 RETURNING id
 )SQL",
-        std::string(wallet_public_id), patch.name, patch.enabled, patch.autoSync);
+        std::string(wallet_public_id), patch.name, patch.enabled, patch.autoSync, rules);
     if (updated.empty()) throw application::EntityNotFound("wallet");
 
     const auto result = co_await wallet(wallet_public_id);
     if (!result) throw application::EntityNotFound("wallet");
     co_return *result;
+}
+
+drogon::Task<bool> PostgresRepository::accounts_bookable_in_default_asset(
+    std::string_view ledger_public_id,
+    const std::vector<std::string> &account_public_ids) const {
+    if (account_public_ids.empty()) co_return true;
+    std::string ids_json;
+    if (glz::write_json(account_public_ids, ids_json)) throw std::runtime_error("id serialization failed");
+    // Ids are compared as text so a malformed one simply fails to match instead of making
+    // the uuid cast throw.
+    const auto rows = co_await client_->execSqlCoro(R"SQL(
+SELECT count(DISTINCT wanted.id) AS missing
+  FROM jsonb_array_elements_text($2::jsonb) AS wanted(id)
+ WHERE NOT EXISTS (
+       SELECT 1
+         FROM accounts a
+         JOIN ledgers l ON l.id = a.ledger_id
+         JOIN assets ast ON ast.id = a.asset_id AND ast.is_default
+        WHERE l.public_id = $1::uuid
+          AND a.public_id::text = wanted.id
+          AND a.system_code IS NULL
+          AND a.archived_at IS NULL AND a.deleted_at IS NULL)
+)SQL", std::string(ledger_public_id), ids_json);
+    co_return rows.front()["missing"].as<std::int64_t>() == 0;
 }
 
 drogon::Task<> PostgresRepository::delete_wallet(std::string_view wallet_public_id) const {
@@ -1854,18 +1917,55 @@ drogon::Task<SyncWriteStats> PostgresRepository::record_wallet_sync(
     std::int64_t user_id,
     const std::vector<ChainTransactionInput> &transactions) const {
 
+    // One transaction for the whole sync: assets, bookkeeping accounts, chain rows,
+    // journal rows and the checkpoint either all land or none of them do.
+    auto transaction = co_await client_->newTransactionCoro();
+    const auto wallet = co_await transaction->execSqlCoro(R"SQL(
+SELECT id, ledger_id, chain_network_id, accept_all_tokens, token_rules::text AS token_rules,
+       CASE WHEN sync_from = '-infinity' THEN NULL
+            ELSE (EXTRACT(EPOCH FROM sync_from) * 1000)::bigint END AS sync_from_ms
+  FROM wallet_accounts
+ WHERE public_id=$1::uuid AND deleted_at IS NULL
+ FOR UPDATE
+)SQL", std::string(wallet_public_id));
+    if (wallet.empty()) throw application::EntityNotFound("wallet");
+    const auto wallet_id = wallet.front()["id"].as<std::int64_t>();
+    const auto ledger_id = wallet.front()["ledger_id"].as<std::int64_t>();
+    const auto chain_network_id = wallet.front()["chain_network_id"].as<std::int64_t>();
+    const bool accept_all_tokens = wallet.front()["accept_all_tokens"].as<bool>();
+    // Read under the same lock the rows are written under, so an edit to the rules that
+    // races a sync applies either wholly before it or wholly after it.
+    const auto rules_json = wallet.front()["token_rules"].as<std::string>();
+    std::set<std::string> accepted_assets;
+    for (const auto &rule : token_rules_from_json(rules_json)) accepted_assets.insert(rule.contract);
+    std::optional<std::int64_t> sync_from_ms;
+    if (!wallet.front()["sync_from_ms"].isNull()) {
+        sync_from_ms = wallet.front()["sync_from_ms"].as<std::int64_t>();
+    }
+
     // Adapter output is flattened into two arrays and handed over as one jsonb
     // parameter each. A sync can carry hundreds of movements and every statement
     // below runs inside one transaction holding the wallet row locked, so a round
     // trip per movement would keep that lock for far longer than necessary.
     std::vector<sync_payload::Transaction> transaction_payload;
     std::vector<sync_payload::Movement> movement_payload;
+    std::vector<sync_payload::Checkpoint> checkpoint_payload;
     transaction_payload.reserve(transactions.size());
+    checkpoint_payload.reserve(transactions.size());
     for (const auto &input : transactions) {
         // tx_hash is half of the chain_transactions unique key: without it the row
         // can neither be deduplicated nor joined to its own movements.
         auto tx_hash = trim_copy(input.txHash);
         if (tx_hash.empty()) continue;
+        checkpoint_payload.push_back(sync_payload::Checkpoint{
+            .hash = tx_hash, .block = input.blockNumber, .ts_ms = input.blockTimestampMs});
+        // History from before the wallet was added is not the ledger's to book; it only
+        // advances the checkpoint. A transaction without a block time yet is still pending,
+        // which means it is new.
+        if (sync_from_ms && input.blockTimestampMs && *input.blockTimestampMs < *sync_from_ms) {
+            continue;
+        }
+        const auto movements_before = movement_payload.size();
 
         for (const auto &movement : input.movements) {
             // The movement key is the idempotency key; an empty one would let the
@@ -1886,6 +1986,14 @@ drogon::Task<SyncWriteStats> PostgresRepository::record_wallet_sync(
             // native cannot trip the CHECK and abort the sync.
             if (!contract_normalized) contract_normalized = contract;
             if (!contract) contract = contract_normalized;
+            // A currency the wallet does not accept leaves no trace at all: no asset, no
+            // per-token account and no row. Address-poisoning spam is the common case.
+            if (!accept_all_tokens &&
+                !accepted_assets.contains(contract_normalized
+                                              ? *contract_normalized
+                                              : std::string(domain::chain::kNativeAssetKey))) {
+                continue;
+            }
 
             movement_payload.push_back(sync_payload::Movement{
                 .mkey = movement.movementKey,
@@ -1904,6 +2012,8 @@ drogon::Task<SyncWriteStats> PostgresRepository::record_wallet_sync(
             });
         }
 
+        // A transaction whose every movement was filtered out is not the ledger's business.
+        if (!accept_all_tokens && movement_payload.size() == movements_before) continue;
         transaction_payload.push_back(sync_payload::Transaction{
             .hash = std::move(tx_hash),
             .block = input.blockNumber,
@@ -1922,20 +2032,11 @@ drogon::Task<SyncWriteStats> PostgresRepository::record_wallet_sync(
     if (const auto error = glz::write_json(movement_payload, movement_json); error) {
         throw std::runtime_error("chain movement serialization failed");
     }
+    std::string checkpoint_json;
+    if (const auto error = glz::write_json(checkpoint_payload, checkpoint_json); error) {
+        throw std::runtime_error("chain checkpoint serialization failed");
+    }
 
-    // One transaction for the whole sync: assets, bookkeeping accounts, chain rows,
-    // journal rows and the checkpoint either all land or none of them do.
-    auto transaction = co_await client_->newTransactionCoro();
-    const auto wallet = co_await transaction->execSqlCoro(R"SQL(
-SELECT id, ledger_id, chain_network_id
-  FROM wallet_accounts
- WHERE public_id=$1::uuid AND deleted_at IS NULL
- FOR UPDATE
-)SQL", std::string(wallet_public_id));
-    if (wallet.empty()) throw application::EntityNotFound("wallet");
-    const auto wallet_id = wallet.front()["id"].as<std::int64_t>();
-    const auto ledger_id = wallet.front()["ledger_id"].as<std::int64_t>();
-    const auto chain_network_id = wallet.front()["chain_network_id"].as<std::int64_t>();
 
     // Creates the state row on first sync and stamps the true start time. The
     // 'running' status is only visible inside this transaction; a failure rolls it
@@ -2009,12 +2110,20 @@ DO NOTHING
 WITH input AS (
     SELECT DISTINCT COALESCE(m.contract_norm, 'native:' || lower(m.symbol)) AS asset_key
       FROM jsonb_to_recordset($1::jsonb) AS m(symbol text, contract_norm text)
+), converted AS (
+    SELECT r.contract AS asset_key
+      FROM jsonb_to_recordset($5::jsonb) AS r(contract text, "exchangeRate" text)
+     WHERE NULLIF(btrim(r."exchangeRate"), '') IS NOT NULL
 ), used_assets AS (
+    -- Converted currencies are booked in the default asset, which already has its clearing
+    -- accounts and the user-chosen account, so they need no per-token accounts.
     SELECT a.id, a.symbol
       FROM assets a
       JOIN input i
         ON i.asset_key = COALESCE(a.contract_address_normalized, 'native:' || lower(a.symbol))
      WHERE a.ledger_id = $2 AND a.chain_network_id = $3
+       AND NOT EXISTS (SELECT 1 FROM converted c
+                        WHERE c.asset_key = COALESCE(a.contract_address_normalized, 'native'))
 ), clearing AS (
     INSERT INTO accounts(ledger_id, name, system_code, asset_id)
     SELECT $2, code.label || ' · ' || u.symbol, code.system_code, u.id
@@ -2047,7 +2156,7 @@ WITH input AS (
 )
 INSERT INTO wallet_asset_accounts(wallet_id, asset_id, account_id)
 SELECT $4, c.asset_id, c.id FROM created c
-)SQL", movement_json, ledger_id, chain_network_id, wallet_id);
+)SQL", movement_json, ledger_id, chain_network_id, wallet_id, rules_json);
 
     // A movement is an immutable historical fact, so a re-sync of the same window must
     // leave the stored one untouched rather than rewrite it: its asset_id is already
@@ -2094,38 +2203,81 @@ RETURNING id
     const auto created_rows = co_await transaction->execSqlCoro(R"SQL(
 WITH input AS (
     SELECT DISTINCT m.mkey FROM jsonb_to_recordset($1::jsonb) AS m(mkey text)
-), target AS MATERIALIZED (
-    SELECT nextval(pg_get_serial_sequence('journal_rows', 'id')) AS row_id,
-           mv.id AS movement_id,
-           mv.asset_id,
-           CASE WHEN mv.direction = 'internal' THEN 'note' ELSE 'entry' END AS kind,
-           CASE WHEN mv.direction = 'internal' THEN 0
-                WHEN mv.direction = 'incoming' THEN mv.amount
-                ELSE -mv.amount END AS signed_amount,
-           COALESCE((mv.occurred_at AT TIME ZONE 'UTC')::date, CURRENT_DATE) AS occurred_on,
-           CASE mv.direction
-                WHEN 'incoming' THEN '链上收款 · '
-                WHEN 'outgoing' THEN '链上转出 · '
-                WHEN 'fee' THEN '链上手续费 · '
-                ELSE '内部转账 · ' END || ast.symbol AS description,
-           wa.account_id AS wallet_account_id,
-           CASE WHEN mv.direction = 'internal' THEN NULL ELSE cat.id END AS category_id,
-           clearing.id AS clearing_account_id
+), rule AS (
+    SELECT DISTINCT ON (r.contract)
+           r.contract AS asset_key,
+           NULLIF(btrim(r."exchangeRate"), '')::numeric AS rate,
+           NULLIF(btrim(r."accountId"), '') AS account_public_id
+      FROM jsonb_to_recordset($5::jsonb) AS r(contract text, "exchangeRate" text, "accountId" text)
+     WHERE NULLIF(btrim(r."exchangeRate"), '') IS NOT NULL
+     ORDER BY r.contract
+), base AS (
+    SELECT a.id, a.decimals FROM assets a WHERE a.ledger_id = $2 AND a.is_default
+), prepared AS (
+    -- A converted movement moves to the default asset at amount * rate, rounded to that
+    -- asset's scale, and lands on the account the rule names. That account must be a live
+    -- user account on the default asset; anything else (deleted, archived, another asset)
+    -- falls back to the unallocated account rather than failing the whole sync.
+    SELECT mv.id AS movement_id,
+           mv.direction,
+           mv.occurred_at,
+           ast.symbol,
+           mv.amount AS chain_amount,
+           ru.rate,
+           CASE WHEN ru.rate IS NULL THEN mv.asset_id ELSE base.id END AS asset_id,
+           CASE WHEN ru.rate IS NULL THEN mv.amount
+                ELSE round(mv.amount * ru.rate, base.decimals) END AS amount,
+           CASE WHEN ru.rate IS NULL THEN wa.account_id
+                ELSE COALESCE(chosen.id, unallocated.id) END AS account_id
       FROM chain_asset_movements mv
       JOIN input i ON i.mkey = mv.movement_key
       JOIN assets ast ON ast.id = mv.asset_id
-      JOIN wallet_asset_accounts wa ON wa.wallet_id = mv.wallet_id AND wa.asset_id = mv.asset_id
-      LEFT JOIN accounts clearing
-        ON clearing.ledger_id = mv.ledger_id AND clearing.asset_id = mv.asset_id
-       AND clearing.system_code = CASE WHEN mv.direction = 'incoming'
-                                       THEN 'income_clearing' ELSE 'expense_clearing' END
-      LEFT JOIN categories cat
-        ON cat.ledger_id = mv.ledger_id
-       AND cat.system_code = CASE WHEN mv.direction = 'incoming'
-                                  THEN 'unallocated_income' ELSE 'unallocated_expense' END
+      CROSS JOIN base
+      LEFT JOIN rule ru ON ru.asset_key = COALESCE(ast.contract_address_normalized, 'native')
+      LEFT JOIN wallet_asset_accounts wa ON wa.wallet_id = mv.wallet_id AND wa.asset_id = mv.asset_id
+      LEFT JOIN accounts chosen
+        ON chosen.public_id::text = ru.account_public_id
+       AND chosen.ledger_id = mv.ledger_id AND chosen.asset_id = base.id
+       AND chosen.system_code IS NULL
+       AND chosen.archived_at IS NULL AND chosen.deleted_at IS NULL
+      LEFT JOIN accounts unallocated
+        ON unallocated.ledger_id = mv.ledger_id AND unallocated.asset_id = base.id
+       AND unallocated.system_code = 'unallocated'
      WHERE mv.ledger_id = $2 AND mv.wallet_id = $3
        AND (mv.direction = 'internal' OR mv.amount > 0)
        AND NOT EXISTS (SELECT 1 FROM chain_movement_row_links k WHERE k.movement_id = mv.id)
+), target AS MATERIALIZED (
+    -- Dust that rounds to zero after conversion gets no row: postings cannot be zero.
+    SELECT nextval(pg_get_serial_sequence('journal_rows', 'id')) AS row_id,
+           p.movement_id,
+           p.asset_id,
+           CASE WHEN p.direction = 'internal' THEN 'note' ELSE 'entry' END AS kind,
+           CASE WHEN p.direction = 'internal' THEN 0
+                WHEN p.direction = 'incoming' THEN p.amount
+                ELSE -p.amount END AS signed_amount,
+           COALESCE((p.occurred_at AT TIME ZONE 'UTC')::date, CURRENT_DATE) AS occurred_on,
+           CASE p.direction
+                WHEN 'incoming' THEN '链上收款 · '
+                WHEN 'outgoing' THEN '链上转出 · '
+                WHEN 'fee' THEN '链上手续费 · '
+                ELSE '内部转账 · ' END
+             || CASE WHEN p.rate IS NULL THEN p.symbol
+                     ELSE trim_scale(p.chain_amount)::text || ' ' || p.symbol
+                          || ' × ' || trim_scale(p.rate)::text END AS description,
+           p.account_id AS wallet_account_id,
+           CASE WHEN p.direction = 'internal' THEN NULL ELSE cat.id END AS category_id,
+           clearing.id AS clearing_account_id
+      FROM prepared p
+      LEFT JOIN accounts clearing
+        ON clearing.ledger_id = $2 AND clearing.asset_id = p.asset_id
+       AND clearing.system_code = CASE WHEN p.direction = 'incoming'
+                                       THEN 'income_clearing' ELSE 'expense_clearing' END
+      LEFT JOIN categories cat
+        ON cat.ledger_id = $2
+       AND cat.system_code = CASE WHEN p.direction = 'incoming'
+                                  THEN 'unallocated_income' ELSE 'unallocated_expense' END
+     WHERE p.account_id IS NOT NULL
+       AND (p.direction = 'internal' OR p.amount > 0)
 ), new_rows AS (
     INSERT INTO journal_rows(id, ledger_id, occurred_on, description, kind, amount,
                              account_id, category_id, transfer_account_id, created_by, asset_id)
@@ -2146,7 +2298,7 @@ WITH input AS (
 INSERT INTO chain_movement_row_links(movement_id, row_id)
 SELECT t.movement_id, t.row_id FROM target t
 RETURNING movement_id
-)SQL", movement_json, ledger_id, wallet_id, user_id);
+)SQL", movement_json, ledger_id, wallet_id, user_id, rules_json);
 
     // postings_balance_guard is DEFERRABLE INITIALLY DEFERRED, so an unbalanced write
     // would otherwise only fail at COMMIT — after this coroutine has already returned
@@ -2188,7 +2340,7 @@ UPDATE wallet_sync_states s
        last_completed_at = clock_timestamp(),
        last_error = NULL
  WHERE s.wallet_id = $2
-)SQL", transaction_json, wallet_id);
+)SQL", checkpoint_json, wallet_id);
 
     co_return SyncWriteStats{
         .transactionsSeen = static_cast<std::int64_t>(upserted_transactions.size()),

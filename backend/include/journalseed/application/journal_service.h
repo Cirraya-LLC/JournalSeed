@@ -103,6 +103,7 @@ class JournalService final {
     wallet(std::string_view wallet_id) const;
     [[nodiscard]] drogon::Task<ServiceResult<WalletView>>
     create_wallet(std::string_view ledger_id, WalletInput input) const;
+    [[nodiscard]] std::vector<TokenPresetView> token_presets() const;
     [[nodiscard]] drogon::Task<ServiceResult<WalletView>>
     update_wallet(std::string_view wallet_id, WalletPatch patch) const;
     [[nodiscard]] drogon::Task<ServiceResult<std::monostate>>

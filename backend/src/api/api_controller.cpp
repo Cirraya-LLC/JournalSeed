@@ -738,6 +738,15 @@ void ApiController::register_routes() {
         {drogon::Patch});
 
     drogon::app().registerHandler(
+        "/api/v1/chain-token-presets",
+        [self](HttpRequestPtr request) -> drogon::Task<HttpResponsePtr> {
+            auto auth = co_await authorize(self->service_, request, false);
+            if (!auth) co_return problem_response(auth.error());
+            co_return json_response(self->service_->token_presets());
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
         "/api/v1/ledgers/{ledgerId}/wallets",
         [self](HttpRequestPtr request, std::string ledger_id) -> drogon::Task<HttpResponsePtr> {
             auto auth = co_await authorize(self->service_, request, false);

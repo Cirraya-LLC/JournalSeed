@@ -2,7 +2,10 @@
   import {
     BookUser,
     CircleAlert,
+    Coins,
     LoaderCircle,
+    Pause,
+    Play,
     Plus,
     RefreshCw,
     Save,
@@ -12,8 +15,10 @@
     WalletCards
   } from 'lucide-svelte';
   import Drawer from './Drawer.svelte';
+  import TokenRulesEditor from './TokenRulesEditor.svelte';
   import { errorMessage, formatMoney } from '$lib/format';
   import type {
+    Account,
     AddressLabel,
     AddressLabelInput,
     AddressLabelKind,
@@ -22,15 +27,19 @@
     ChainSettings,
     ChainSettingsPatch,
     ChainTransaction,
+    TokenPreset,
     Wallet,
     WalletInput,
-    WalletPatch
+    WalletPatch,
+    WalletTokenRule
   } from '$lib/types';
 
   export let settings: ChainSettings | null;
   export let wallets: Wallet[];
   export let transactions: ChainTransaction[];
   export let labels: AddressLabel[];
+  export let accounts: Account[] = [];
+  export let presets: TokenPreset[] = [];
   export let loading = false;
   export let onCreateWallet: (input: WalletInput) => Promise<void>;
   export let onUpdateWallet: (walletId: string, patch: WalletPatch) => Promise<void>;
@@ -90,8 +99,16 @@
   let walletName = '';
   let walletChain: ChainCode = 'tron-mainnet';
   let walletAddress = '';
-  let walletEnabled = true;
   let walletAutoSync = true;
+  let walletRules: WalletTokenRule[] = [];
+  let walletRulesError = '';
+  let walletFormKey = 0;
+
+  let rulesWallet: Wallet | null = null;
+  let editedRules: WalletTokenRule[] = [];
+  let editedRulesError = '';
+  let rulesSaving = false;
+  let rulesError = '';
   let creatingWallet = false;
   let walletError = '';
   let syncingWalletId = '';
@@ -216,20 +233,25 @@
       walletError = `请填写${selectedChain.addressLabel}`;
       return;
     }
+    if (walletRulesError) {
+      walletError = walletRulesError;
+      return;
+    }
     creatingWallet = true;
     try {
       await onCreateWallet({
         chain: walletChain,
         name: walletName.trim(),
         address: walletAddress.trim(),
-        enabled: walletEnabled,
-        autoSync: walletAutoSync
+        enabled: true,
+        autoSync: walletAutoSync,
+        acceptedTokens: walletRules
       });
       walletName = '';
       walletAddress = '';
       walletChain = 'tron-mainnet';
-      walletEnabled = true;
       walletAutoSync = true;
+      walletFormKey += 1;
     } catch (reason) {
       walletError = errorMessage(reason);
     } finally {
@@ -257,6 +279,40 @@
       walletError = errorMessage(reason);
     } finally {
       mutatingWalletId = '';
+    }
+  }
+
+  function accountName(accountId: string | undefined): string {
+    if (!accountId) return '未分配账户';
+    return accounts.find((account) => account.id === accountId)?.name ?? '未分配账户';
+  }
+
+  function ruleText(rule: WalletTokenRule): string {
+    return rule.exchangeRate
+      ? `${rule.symbol} ×${rule.exchangeRate} → ${accountName(rule.accountId)}`
+      : `${rule.symbol} 原币记账`;
+  }
+
+  function openRules(wallet: Wallet): void {
+    rulesWallet = wallet;
+    rulesError = '';
+  }
+
+  async function saveRules(): Promise<void> {
+    if (!rulesWallet) return;
+    if (editedRulesError) {
+      rulesError = editedRulesError;
+      return;
+    }
+    rulesSaving = true;
+    rulesError = '';
+    try {
+      await onUpdateWallet(rulesWallet.id, { acceptedTokens: editedRules });
+      rulesWallet = null;
+    } catch (reason) {
+      rulesError = errorMessage(reason);
+    } finally {
+      rulesSaving = false;
     }
   }
 
@@ -406,9 +462,6 @@
         />
       </div>
       <label class="check-line">
-        <input type="checkbox" bind:checked={walletEnabled} />启用
-      </label>
-      <label class="check-line">
         <input type="checkbox" bind:checked={walletAutoSync} />自动同步
       </label>
       <button class="button primary" type="submit" disabled={creatingWallet}>
@@ -417,6 +470,19 @@
           />{/if}
         添加钱包
       </button>
+      <div class="form-rules">
+        {#key `${walletChain}-${walletFormKey}`}
+          <TokenRulesEditor
+            chain={walletChain}
+            {presets}
+            {accounts}
+            idPrefix="new-wallet"
+            bind:rules={walletRules}
+            bind:error={walletRulesError}
+          />
+        {/key}
+        <p class="sync-from-note">只记录添加之后的链上交易，添加之前的历史不会入账。</p>
+      </div>
     </form>
     {#if walletError}<p class="field-error" role="alert">{walletError}</p>{/if}
   </section>
@@ -438,7 +504,8 @@
           {#each wallets as wallet (wallet.id)}
             <article class="wallet-card" class:disabled={!wallet.enabled}>
               <div class="wallet-main">
-                <strong>{wallet.name}</strong>
+                <strong>{wallet.name}{#if !wallet.enabled}<em class="paused-chip">已暂停</em
+                    >{/if}</strong>
                 <span
                   >{joinParts(
                     chainLabel(wallet.chain, wallet.chainName),
@@ -454,19 +521,35 @@
                     >{new Date(wallet.lastSyncedAt).toLocaleString('zh-CN')}</small
                   >{:else}<small>尚未同步</small>{/if}
               </div>
+              <div class="wallet-tokens">
+                {#if wallet.acceptAllTokens}
+                  <span class="token-chip">接受全部币种</span>
+                {:else}
+                  {#each wallet.acceptedTokens ?? [] as rule (rule.contract)}<span class="token-chip"
+                      >{ruleText(rule)}</span
+                    >{/each}
+                {/if}
+                {#if wallet.syncFrom}<small
+                    >自 {new Date(wallet.syncFrom).toLocaleString('zh-CN')} 起记账</small
+                  >{/if}
+              </div>
               {#if wallet.lastError}<p class="wallet-error">
                   <CircleAlert size={14} />{wallet.lastError}
                 </p>{/if}
               <div class="wallet-switches">
-                <label
-                  ><input
-                    type="checkbox"
-                    checked={wallet.enabled}
-                    disabled={mutatingWalletId === wallet.id}
-                    on:change={(event) =>
-                      toggleWallet(wallet, { enabled: event.currentTarget.checked })}
-                  />启用</label
+                <button
+                  class="button"
+                  type="button"
+                  disabled={mutatingWalletId === wallet.id}
+                  title={wallet.enabled
+                    ? '暂停后不再同步；恢复时从暂停处继续补记'
+                    : '恢复同步，暂停期间的交易会补记'}
+                  on:click={() => toggleWallet(wallet, { enabled: !wallet.enabled })}
                 >
+                  {#if wallet.enabled}<Pause size={15} />暂停同步{:else}<Play
+                      size={15}
+                    />恢复同步{/if}
+                </button>
                 <label
                   ><input
                     type="checkbox"
@@ -478,10 +561,13 @@
                 >
               </div>
               <div class="wallet-actions">
+                <button class="button" type="button" on:click={() => openRules(wallet)}>
+                  <Coins size={16} />币种与汇率
+                </button>
                 <button
                   class="button"
                   type="button"
-                  disabled={syncingWalletId === wallet.id}
+                  disabled={syncingWalletId === wallet.id || !wallet.enabled}
                   on:click={() => syncWallet(wallet)}
                 >
                   <RefreshCw
@@ -687,6 +773,41 @@
   </section>
 </div>
 
+{#if rulesWallet}
+  <Drawer
+    title="接受的货币与汇率"
+    eyebrow={joinParts(rulesWallet.name, chainLabel(rulesWallet.chain, rulesWallet.chainName))}
+    onClose={() => (rulesWallet = null)}
+  >
+    <form class="label-form" on:submit|preventDefault={saveRules}>
+      {#if rulesWallet.acceptAllTokens}
+        <div class="label-scope">
+          <span>该钱包目前接受全部币种；保存后只同步下面勾选的币种。</span>
+        </div>
+      {/if}
+      <TokenRulesEditor
+        chain={rulesWallet.chain}
+        {presets}
+        {accounts}
+        initial={rulesWallet.acceptAllTokens ? null : rulesWallet.acceptedTokens}
+        idPrefix="edit-wallet"
+        bind:rules={editedRules}
+        bind:error={editedRulesError}
+      />
+      <p class="sync-from-note">修改只影响之后同步进来的交易，已生成的流水不会被改写。</p>
+      {#if rulesError}<p class="field-error" role="alert">{rulesError}</p>{/if}
+      <footer class="label-actions">
+        <button class="button primary" type="submit" disabled={rulesSaving}>
+          {#if rulesSaving}<LoaderCircle class="spinner-icon" size={17} />{:else}<Save
+              size={17}
+            />{/if}
+          保存
+        </button>
+      </footer>
+    </form>
+  </Drawer>
+{/if}
+
 {#if labelDrawerOpen}
   <Drawer
     title={activeLabel ? '修改地址标记' : '标记地址'}
@@ -782,9 +903,61 @@
     border-bottom: 1px solid var(--line);
   }
 
+  .form-rules {
+    display: grid;
+    grid-column: 1 / -1;
+    gap: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--line);
+  }
+
+  .sync-from-note {
+    margin: 0;
+    color: var(--ink-muted);
+    font-size: 0.75rem;
+  }
+
+  .wallet-tokens {
+    display: flex;
+    flex-wrap: wrap;
+    grid-column: 1 / -1;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .wallet-tokens small {
+    color: var(--ink-muted);
+    font-size: 0.6875rem;
+  }
+
+  .token-chip,
+  .paused-chip {
+    display: inline-grid;
+    place-items: center;
+    min-height: 20px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: var(--surface-subtle);
+    color: var(--ink);
+    font-size: 0.6875rem;
+    font-style: normal;
+    font-weight: 700;
+  }
+
+  .paused-chip {
+    margin-left: 6px;
+    color: var(--expense);
+  }
+
+  .wallet-switches .button {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
   .wallet-form {
     display: grid;
-    grid-template-columns: 140px minmax(130px, 0.75fr) minmax(220px, 1.5fr) auto auto auto;
+    grid-template-columns: 140px minmax(130px, 0.75fr) minmax(220px, 1.5fr) auto auto;
     align-items: end;
     gap: 9px;
     padding: 12px 14px;

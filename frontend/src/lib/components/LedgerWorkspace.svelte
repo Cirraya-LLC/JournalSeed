@@ -46,6 +46,7 @@
     LuaFunction,
     RowInput,
     Session,
+    TokenPreset,
     Wallet,
     WalletInput,
     WalletPatch
@@ -85,6 +86,7 @@
   let functions: LuaFunction[] = [];
   let chainSettings: ChainSettings | null = null;
   let wallets: Wallet[] = [];
+  let tokenPresets: TokenPreset[] = [];
   let addressLabels: AddressLabel[] = [];
   let chainTransactions: ChainTransaction[] = [];
   let nextCursor: string | null = null;
@@ -180,7 +182,8 @@
         settingsResult,
         walletResult,
         labelResult,
-        chainTransactionResult
+        chainTransactionResult,
+        presetResult
       ] = await Promise.all([
         api.summary(selectedLedgerId),
         api.accounts(selectedLedgerId),
@@ -192,7 +195,8 @@
         api.chainSettings(),
         api.wallets(selectedLedgerId),
         api.addressLabels(selectedLedgerId),
-        api.chainTransactions(selectedLedgerId, { limit: 100 })
+        api.chainTransactions(selectedLedgerId, { limit: 100 }),
+        api.tokenPresets()
       ]);
       summary = summaryResult;
       accounts = accountResult;
@@ -207,6 +211,7 @@
       wallets = walletResult;
       addressLabels = labelResult;
       chainTransactions = chainTransactionResult;
+      tokenPresets = presetResult;
     } catch (reason) {
       notify('error', errorMessage(reason));
     } finally {
@@ -661,6 +666,8 @@
           {wallets}
           transactions={chainTransactions}
           labels={addressLabels}
+          {accounts}
+          presets={tokenPresets}
           {loading}
           onCreateWallet={createWallet}
           onUpdateWallet={updateWallet}
